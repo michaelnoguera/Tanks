@@ -39,6 +39,10 @@ dependencies {
     implementation("org.lwjgl", "lwjgl-glfw")
     implementation("org.lwjgl", "lwjgl-openal")
     implementation("org.lwjgl", "lwjgl-opengl")
+    implementation("org.lwjgl", "lwjgl-vulkan")
+    // Vulkan natives contain MoltenVK only; Windows/Linux use system loaders.
+    runtimeOnly("org.lwjgl", "lwjgl-vulkan", classifier = "natives-macos")
+    runtimeOnly("org.lwjgl", "lwjgl-vulkan", classifier = "natives-macos-arm64")
     implementation("org.lwjgl", "lwjgl-stb")
 
     for (native in lwjglNatives) {
@@ -191,3 +195,25 @@ task("BuildMacApp", Exec::class) {
         "--dest", distributions,
     )
 }
+
+// Isolated diagnostics: no game, OpenGL, or audio initialization.
+tasks.register<JavaExec>("vulkanProbe") {
+    group = "verification"
+    description = "Reports Vulkan capabilities; use --args='--window --output=path.json' for WSI."
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("vulkanprobe.VulkanProbe")
+    if (System.getProperty("os.name").startsWith("Mac"))
+        jvmArgs("-XstartOnFirstThread")
+    providers.gradleProperty("vulkanLibrary").orNull?.let {
+        systemProperty("org.lwjgl.vulkan.libname", it)
+    }
+}
+
+tasks.register<JavaExec>("vulkanProbeTest") {
+    group = "verification"
+    description = "Checks capability policy and JSON escaping without a GPU."
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("vulkanprobe.ProbeReportTest")
+    dependsOn(tasks.testClasses)
+}
+tasks.check { dependsOn("vulkanProbeTest") }
