@@ -40,6 +40,9 @@ To run the jar file you can double-click on it.
 
 ## Development
 
+See the [codebase documentation](docs/README.md) for build instructions,
+architecture, saved content, extension development, and networking.
+
 To develop the game we suggest using Eclipse or IntelliJ. Eclipse can be installed from 
 [eclipse.org](http://www.eclipse.org/downloads/). IntelliJ can be installed from 
 [jetbrains.com](https://www.jetbrains.com/idea/download/). <br>
