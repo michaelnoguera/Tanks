@@ -1,0 +1,9 @@
+scenario,samples,updates,draws,scene_passes,back_changed_pixels,back_non_background_pixels,front_changed_pixels,front_non_background_pixels
+shadows-false-lights-false-truetype-false,32,32,32,32,0,68295,0,0
+shadows-false-lights-false-truetype-true,32,32,32,32,0,68397,0,0
+shadows-false-lights-true-truetype-false,32,32,32,32,0,68295,0,0
+shadows-false-lights-true-truetype-true,32,32,32,32,0,68397,0,0
+shadows-true-lights-false-truetype-false,32,32,32,64,0,68295,0,0
+shadows-true-lights-false-truetype-true,32,32,32,64,0,68397,0,0
+shadows-true-lights-true-truetype-false,32,32,32,64,0,68295,0,0
+shadows-true-lights-true-truetype-true,32,32,32,64,0,68397,0,0

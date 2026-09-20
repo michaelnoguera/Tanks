@@ -1,0 +1,2 @@
+changed_pixels=0
+non_background_pixels=68397
