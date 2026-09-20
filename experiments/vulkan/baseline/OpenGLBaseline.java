@@ -235,6 +235,17 @@ public final class OpenGLBaseline
                     if (a.getRGB(x, y) != background)
                         nonBackground++;
                 }
+            // Check geometry separately from text: a nonblank error screen must not pass.
+            int blueBox = a.getRGB(140 * a.getWidth() / 640, 150 * a.getHeight() / 480);
+            int redBox = a.getRGB(280 * a.getWidth() / 640, 250 * a.getHeight() / 480);
+            int greenOval = a.getRGB(470 * a.getWidth() / 640, 320 * a.getHeight() / 480);
+            int blue = blueBox & 255;
+            int red = (redBox >> 16) & 255;
+            int green = (greenOval >> 8) & 255;
+            if (blue < 50 || blue <= ((blueBox >> 16) & 255) ||
+                    red < 50 || red <= 2 * ((redBox >> 8) & 255) ||
+                    green < 40 || green <= 2 * ((greenOval >> 16) & 255))
+                throw new IllegalStateException("Fixture box/oval landmarks missing or incorrectly colored");
             if (updates != 32 || draws != 32 || passes != 32 * (shadows ? 2 : 1))
                 throw new IllegalStateException("Unexpected callback counts");
             if (changed != 0 || nonBackground == 0)

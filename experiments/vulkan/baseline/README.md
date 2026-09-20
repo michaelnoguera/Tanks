@@ -54,7 +54,8 @@ callbacks without shadows or 64 with shadows. The fixture's update callback
 only increments a counter. Its scene callback replaces `GameDrawer.drawSinglePass`;
 its UI callback replaces `RenderPassUI.draw`. These counts verify pass scheduling
 for this fixture, not extension or simulation behavior. The repeatability gate
-requires zero changed back-buffer pixels within one process. Front-buffer images
+requires zero changed back-buffer pixels within one process. Interior color checks
+for both boxes and the oval reject text-only or missing-geometry results. Front-buffer images
 are retained separately: Xvfb/Mesa may return uniform black even when back-buffer
 rendering passes. Success does not establish presentation or screenshot behavior. Cross-process and cross-device
 tolerances still require measurement.
