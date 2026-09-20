@@ -13,6 +13,7 @@ and Gradle build in this repository.
 | Change network events or run Tanks Online | [Networking](networking.md) |
 | Run and develop the current Vulkan renderer | [Vulkan renderer development](vulkan-renderer.md) |
 | Follow the remaining desktop Vulkan port | [Vulkan port plan](vulkan-port-plan.md) |
+| Publish local Kata tasks to GitHub | [Task sync](task-sync.md) |
 | Query Vulkan devices and surface support | [Vulkan capability probe](vulkan-capability-probe.md) |
 | Capture a repeatable OpenGL fixture | [OpenGL baseline tooling](../experiments/vulkan/baseline/README.md) |
 
