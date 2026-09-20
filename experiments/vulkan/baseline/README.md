@@ -46,8 +46,11 @@ and fixture source. Each scenario contains:
 performance comparisons. Front-buffer capture and manifest I/O are outside the
 measured interval. This measures CPU wall time, not GPU execution time.
 Frame 0 includes lazy shader initialization. Frames 0–29 warm the fixture before
-capture. Heap usage is `totalMemory - freeMemory`, not process RSS or GPU memory.
-Do not use software-renderer times as a hardware performance target.
+capture. This short run has no steady-state performance sample window; its
+timings are diagnostic only. Performance qualification needs a longer run with
+measurement frames after warm-up and before capture. Heap usage is
+`totalMemory - freeMemory`, not process RSS or GPU memory. Do not use
+software-renderer times as a hardware performance target.
 
 The expected totals are 32 update callbacks, 32 draw callbacks, and 32 scene
 callbacks without shadows or 64 with shadows. The fixture's update callback
@@ -103,6 +106,9 @@ Commented legacy `ShaderBones` setup calls are excluded. Posed-model coverage mu
 verify the active group actually selects bone-capable stages before accepting it.
 
 ## Remaining V01 acceptance work
+
+V01 is the OpenGL rendering baseline task, Kata `jrtq`, in the
+[Vulkan port plan](../../../docs/vulkan-port-plan.md).
 
 | Scenario | Required evidence |
 | --- | --- |

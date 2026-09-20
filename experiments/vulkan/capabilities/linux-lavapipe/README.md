@@ -9,7 +9,7 @@ device reports API `1.3.230` and device type `4` (CPU).
 | Artifact | Command/environment | Result |
 | --- | --- | --- |
 | [headless.json](headless.json) | `./gradlew vulkanProbe --args='--output=experiments/vulkan/capabilities/linux-lavapipe/headless.json'` | Exit 0; headless candidate, presentation unqueried |
-| [window.json](window.json) | Same output option with `--window`, under `xvfb-run -a`; `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`, `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` | Exit 0; surface support candidate; no validation errors emitted |
+| [window.json](window.json) | `./gradlew vulkanProbe --args='--window --output=experiments/vulkan/capabilities/linux-lavapipe/window.json'`, under `xvfb-run -a`; `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`, `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` | Exit 0; surface support candidate; no validation errors emitted |
 | [missing-loader.json](missing-loader.json) | `-PvulkanLibrary=/nonexistent/tanks-vulkan-loader.so` | Child exit 1; loader error |
 | [missing-icd.json](missing-icd.json) | `VK_ICD_FILENAMES=/nonexistent/tanks-icd.json` | Child exit 1; instance creation returns -9 (`VK_ERROR_INCOMPATIBLE_DRIVER`) |
 | [no-display.json](no-display.json) | `--window` with empty `DISPLAY` and `WAYLAND_DISPLAY` | Child exit 1; GLFW initialization error |
@@ -20,7 +20,9 @@ output. Validation covered instance, surface, and physical-device queries only;
 there was no logical device, swapchain, render submission, or present call.
 
 The device exposes eight color attachments, sampled color/depth candidate
-formats, independent blending, and sample-count mask `5` (1× and 4×). Queue
+formats, and independent blending. Both `limits.framebufferColorSampleCounts`
+and `limits.framebufferDepthSampleCounts` report mask `5` (1× and 4×). Consult
+each format's `sampleCounts` before selecting a format/sample combination. Queue
 family 0 reports both graphics and presentation support for the Xvfb surface.
 These observations qualify this query harness on a CPU driver. They do not
 qualify a physical GPU, a real desktop session, or either macOS loader path.
