@@ -217,3 +217,15 @@ tasks.register<JavaExec>("vulkanProbeTest") {
     dependsOn(tasks.testClasses)
 }
 tasks.check { dependsOn("vulkanProbeTest") }
+
+tasks.register<JavaExec>("runVulkan") {
+    group = "application"
+    description = "Runs the Vulkan renderer during development."
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("vulkanwindow.VulkanApplication")
+    if (System.getProperty("os.name").startsWith("Mac"))
+        jvmArgs("-XstartOnFirstThread")
+    providers.gradleProperty("vulkanLibrary").orNull?.let {
+        systemProperty("org.lwjgl.vulkan.libname", it)
+    }
+}
