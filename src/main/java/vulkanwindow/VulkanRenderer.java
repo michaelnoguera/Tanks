@@ -4,6 +4,7 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.*;
+import vulkancommon.VulkanExtensions;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -109,12 +110,8 @@ public final class VulkanRenderer implements AutoCloseable
     private void createInstance(MemoryStack stack, boolean validation)
     {
         if (VK.getInstanceVersionSupported() < VK_API_VERSION_1_1) throw new IllegalStateException("Vulkan 1.1 is required");
-        IntBuffer count = stack.mallocInt(1);
-        check(vkEnumerateInstanceExtensionProperties((String) null, count, null), "count instance extensions");
-        VkExtensionProperties.Buffer properties = VkExtensionProperties.calloc(count.get(0), stack);
-        check(vkEnumerateInstanceExtensionProperties((String) null, count, properties), "query instance extensions");
-        Set<String> available = new HashSet<>();
-        for (VkExtensionProperties property: properties) available.add(property.extensionNameString());
+        Set<String> available = VulkanExtensions.names((count, properties) ->
+                vkEnumerateInstanceExtensionProperties((String) null, count, properties));
         PointerBuffer required = glfwGetRequiredInstanceExtensions();
         if (required == null) throw new IllegalStateException("GLFW cannot provide Vulkan surface extensions");
         List<String> extensions = new ArrayList<>();
@@ -157,15 +154,10 @@ public final class VulkanRenderer implements AutoCloseable
         }
     }
 
-    private Set<String> deviceExtensions(VkPhysicalDevice candidate, MemoryStack stack)
+    private Set<String> deviceExtensions(VkPhysicalDevice candidate)
     {
-        IntBuffer count = stack.mallocInt(1);
-        check(vkEnumerateDeviceExtensionProperties(candidate, (String) null, count, null), "count device extensions");
-        VkExtensionProperties.Buffer properties = VkExtensionProperties.calloc(count.get(0), stack);
-        check(vkEnumerateDeviceExtensionProperties(candidate, (String) null, count, properties), "query device extensions");
-        Set<String> extensions = new HashSet<>();
-        for (VkExtensionProperties property: properties) extensions.add(property.extensionNameString());
-        return extensions;
+        return VulkanExtensions.names((count, properties) ->
+                vkEnumerateDeviceExtensionProperties(candidate, (String) null, count, properties));
     }
 
     private void selectDevice(MemoryStack stack)
@@ -176,33 +168,36 @@ public final class VulkanRenderer implements AutoCloseable
         check(vkEnumeratePhysicalDevices(instance, count, devices), "query physical devices");
         for (int i = 0; i < devices.limit(); i++)
         {
-            VkPhysicalDevice candidate = new VkPhysicalDevice(devices.get(i), instance);
-            VkPhysicalDeviceProperties properties = VkPhysicalDeviceProperties.calloc(stack);
-            vkGetPhysicalDeviceProperties(candidate, properties);
-            if (properties.apiVersion() < VK_API_VERSION_1_1 || !deviceExtensions(candidate, stack).contains(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) continue;
-            vkGetPhysicalDeviceQueueFamilyProperties(candidate, count, null);
-            VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.calloc(count.get(0), stack);
-            vkGetPhysicalDeviceQueueFamilyProperties(candidate, count, families);
-            int graphics = -1;
-            int present = -1;
-            IntBuffer supported = stack.mallocInt(1);
-            for (int family = 0; family < families.limit(); family++)
+            try (MemoryStack candidateStack = MemoryStack.stackPush())
             {
-                if (families.get(family).queueCount() == 0) continue;
-                if ((families.get(family).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0) graphics = family;
-                check(vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, supported), "query presentation queue");
-                if (supported.get(0) != 0) present = family;
-                if (graphics == family && present == family) break;
+                VkPhysicalDevice candidate = new VkPhysicalDevice(devices.get(i), instance);
+                VkPhysicalDeviceProperties properties = VkPhysicalDeviceProperties.calloc(candidateStack);
+                vkGetPhysicalDeviceProperties(candidate, properties);
+                if (properties.apiVersion() < VK_API_VERSION_1_1 || !deviceExtensions(candidate).contains(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) continue;
+                vkGetPhysicalDeviceQueueFamilyProperties(candidate, count, null);
+                VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.calloc(count.get(0), candidateStack);
+                vkGetPhysicalDeviceQueueFamilyProperties(candidate, count, families);
+                int graphics = -1;
+                int present = -1;
+                IntBuffer supported = candidateStack.mallocInt(1);
+                for (int family = 0; family < families.limit(); family++)
+                {
+                    if (families.get(family).queueCount() == 0) continue;
+                    if ((families.get(family).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0) graphics = family;
+                    check(vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, supported), "query presentation queue");
+                    if (supported.get(0) != 0) present = family;
+                    if (graphics == family && present == family) break;
+                }
+                check(vkGetPhysicalDeviceSurfaceFormatsKHR(candidate, surface, count, null), "count surface formats");
+                if (graphics < 0 || present < 0 || count.get(0) == 0) continue;
+                check(vkGetPhysicalDeviceSurfacePresentModesKHR(candidate, surface, count, null), "count present modes");
+                if (count.get(0) == 0) continue;
+                physicalDevice = candidate;
+                graphicsFamily = graphics;
+                presentFamily = present;
+                System.out.println("Vulkan device: " + properties.deviceNameString());
+                return;
             }
-            check(vkGetPhysicalDeviceSurfaceFormatsKHR(candidate, surface, count, null), "count surface formats");
-            if (graphics < 0 || present < 0 || count.get(0) == 0) continue;
-            check(vkGetPhysicalDeviceSurfacePresentModesKHR(candidate, surface, count, null), "count present modes");
-            if (count.get(0) == 0) continue;
-            physicalDevice = candidate;
-            graphicsFamily = graphics;
-            presentFamily = present;
-            System.out.println("Vulkan device: " + properties.deviceNameString());
-            return;
         }
         throw new IllegalStateException("No Vulkan 1.1 device supports this window's graphics and presentation queues");
     }
@@ -212,7 +207,7 @@ public final class VulkanRenderer implements AutoCloseable
         VkDeviceQueueCreateInfo.Buffer queues = VkDeviceQueueCreateInfo.calloc(graphicsFamily == presentFamily ? 1 : 2, stack);
         queues.get(0).sType$Default().queueFamilyIndex(graphicsFamily).pQueuePriorities(stack.floats(1));
         if (queues.limit() == 2) queues.get(1).sType$Default().queueFamilyIndex(presentFamily).pQueuePriorities(stack.floats(1));
-        Set<String> extensions = deviceExtensions(physicalDevice, stack);
+        Set<String> extensions = deviceExtensions(physicalDevice);
         PointerBuffer names = stack.mallocPointer(extensions.contains("VK_KHR_portability_subset") ? 2 : 1);
         names.put(stack.UTF8(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
         if (extensions.contains("VK_KHR_portability_subset")) names.put(stack.UTF8("VK_KHR_portability_subset"));

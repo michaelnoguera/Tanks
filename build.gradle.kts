@@ -251,3 +251,13 @@ tasks.register<JavaExec>("vulkanGeometryTest") {
         systemProperty("org.lwjgl.vulkan.libname", it)
     }
 }
+
+tasks.register<JavaExec>("vulkanExtensionsTest") {
+    group = "verification"
+    description = "Checks large Vulkan extension lists without a GPU."
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("vulkancommon.VulkanExtensionsTest")
+    dependsOn(tasks.testClasses)
+    systemProperty("org.lwjgl.system.stackSize", "16")
+}
+tasks.check { dependsOn("vulkanExtensionsTest") }

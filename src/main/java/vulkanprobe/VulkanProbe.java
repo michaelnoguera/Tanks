@@ -5,6 +5,7 @@ import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
+import vulkancommon.VulkanExtensions;
 
 import java.nio.*;
 import java.nio.charset.StandardCharsets;
@@ -169,11 +170,8 @@ public final class VulkanProbe
                     "maxPushConstantsSize", limits.maxPushConstantsSize(), "maxBoundDescriptorSets", limits.maxBoundDescriptorSets(),
                     "framebufferColorSampleCounts", limits.framebufferColorSampleCounts(), "framebufferDepthSampleCounts", limits.framebufferDepthSampleCounts()));
             IntBuffer count = stack.mallocInt(1);
-            check(vkEnumerateDeviceExtensionProperties(device, (ByteBuffer) null, count, null), "count device extensions");
-            VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.malloc(count.get(0), stack);
-            check(vkEnumerateDeviceExtensionProperties(device, (ByteBuffer) null, count, extensionProperties), "device extensions");
-            Set<String> extensions = new TreeSet<>();
-            for (int i = 0; i < count.get(0); i++) extensions.add(extensionProperties.get(i).extensionNameString());
+            Set<String> extensions = VulkanExtensions.names((extensionCount, propertiesBuffer) ->
+                    vkEnumerateDeviceExtensionProperties(device, (ByteBuffer) null, extensionCount, propertiesBuffer));
             result.put("extensions", extensions);
             vkGetPhysicalDeviceQueueFamilyProperties(device, count, null);
             VkQueueFamilyProperties.Buffer queues = VkQueueFamilyProperties.malloc(count.get(0), stack);
@@ -280,13 +278,8 @@ public final class VulkanProbe
 
     private static Set<String> instanceExtensions(MemoryStack stack)
     {
-        IntBuffer count = stack.mallocInt(1);
-        check(vkEnumerateInstanceExtensionProperties((ByteBuffer) null, count, null), "count instance extensions");
-        VkExtensionProperties.Buffer extensions = VkExtensionProperties.malloc(count.get(0), stack);
-        check(vkEnumerateInstanceExtensionProperties((ByteBuffer) null, count, extensions), "instance extensions");
-        Set<String> names = new TreeSet<>();
-        for (int i = 0; i < count.get(0); i++) names.add(extensions.get(i).extensionNameString());
-        return names;
+        return VulkanExtensions.names((count, properties) ->
+                vkEnumerateInstanceExtensionProperties((ByteBuffer) null, count, properties));
     }
 
     private static String version(int value)
