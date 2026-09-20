@@ -229,3 +229,25 @@ tasks.register<JavaExec>("runVulkan") {
         systemProperty("org.lwjgl.vulkan.libname", it)
     }
 }
+
+tasks.register<JavaExec>("vulkanDrawListTest") {
+    group = "verification"
+    description = "Checks Vulkan geometry command construction without a GPU."
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("vulkanwindow.VulkanDrawListTest")
+    dependsOn(tasks.testClasses)
+}
+tasks.check { dependsOn("vulkanDrawListTest") }
+
+tasks.register<JavaExec>("vulkanGeometryTest") {
+    group = "verification"
+    description = "Checks Vulkan geometry and texture pixels using a window and validation layers."
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("vulkanwindow.VulkanGeometryTest")
+    dependsOn(tasks.testClasses)
+    if (System.getProperty("os.name").startsWith("Mac"))
+        jvmArgs("-XstartOnFirstThread")
+    providers.gradleProperty("vulkanLibrary").orNull?.let {
+        systemProperty("org.lwjgl.vulkan.libname", it)
+    }
+}

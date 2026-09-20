@@ -68,6 +68,9 @@ public final class VulkanDrawListTest
         require(close(vertices[8], 0.2) && close(vertices[9], 0.3), "image must retain supplied UV bounds");
         require(close(vertices[18], 0.8) && close(vertices[19], 0.3), "image second corner has incorrect UVs");
         require("image".equals(list.commands().get(0).texture), "image resource must reach its command");
+        list.drawImage(0, 0, 0, 1, 1, 0, 0, 1, 1, "image", 0, true);
+        require(list.commands().get(1).depth && !list.commands().get(1).depthWrite,
+                "images must test depth without writing, including opaque image colors");
     }
 
     private static void testInvalidVertices()

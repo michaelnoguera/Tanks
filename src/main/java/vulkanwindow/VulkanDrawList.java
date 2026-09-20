@@ -161,7 +161,7 @@ public final class VulkanDrawList
                     y + height / 2 + dx * sin + dy * cos, z,
                     right ? u2 : u1, bottom ? v2 : v1);
         }
-        finish(first, texture, depth);
+        finish(first, texture, depth, false);
     }
 
     private void quad(double x1, double y1, double z1, double x2, double y2, double z2,
@@ -207,8 +207,13 @@ public final class VulkanDrawList
 
     private void finish(int first, String texture, boolean depth)
     {
+        finish(first, texture, depth, depth && alpha == 1);
+    }
+
+    private void finish(int first, String texture, boolean depth, boolean depthWrite)
+    {
         int count = size / FLOATS_PER_VERTEX - first;
         if (count > 0)
-            draws.add(new Command(first, count, texture, depth, depth && alpha == 1));
+            draws.add(new Command(first, count, texture, depth, depthWrite));
     }
 }

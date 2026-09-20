@@ -13,6 +13,7 @@ public final class VulkanApplication
     public static void run(String[] args)
     {
         int frames = 0;
+        java.nio.file.Path capture = null;
         int resizeFrame = -1;
         boolean validation = false;
         boolean vsync = true;
@@ -21,6 +22,7 @@ public final class VulkanApplication
         {
             if (arg.startsWith("--frames=")) frames = Integer.parseInt(arg.substring(9));
             else if (arg.startsWith("--resize-frame=")) resizeFrame = Integer.parseInt(arg.substring(15));
+            else if (arg.startsWith("--capture=")) capture = java.nio.file.Paths.get(arg.substring(10));
             else if (arg.equals("--validation")) validation = true;
             else if (arg.equals("--no-vsync")) vsync = false;
             else if (arg.equals("--exercise-window")) exerciseWindow = true;
@@ -34,6 +36,8 @@ public final class VulkanApplication
             try
             {
                 renderer.setVsync(vsync);
+                renderer.setDrawing(VulkanScene.create());
+                if (capture != null) renderer.capture(capture);
                 boolean resized = false;
                 int windowStep = 0;
                 while (!window.shouldClose() && (frames == 0 || rendered < frames))
