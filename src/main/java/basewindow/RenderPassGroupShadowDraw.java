@@ -1,7 +1,5 @@
 package basewindow;
 
-import lwjglwindow.FrameBuffer;
-
 public class RenderPassGroupShadowDraw
 {
     public BaseWindow window;
@@ -55,7 +53,7 @@ public class RenderPassGroupShadowDraw
             this.depthFrameBuffer.free();
         }
 
-        this.depthFrameBuffer = new FrameBuffer();
+        this.depthFrameBuffer = this.window.createFrameBuffer();
         this.depthFrameBuffer.createDepthTexture(this.size, this.size);
         this.depthFrameBuffer.initialize();
     }

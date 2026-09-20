@@ -1,6 +1,7 @@
 package tanks.gui.screen;
 
-import lwjglwindow.*;
+import basewindow.BaseFontRenderer;
+import basewindow.BaseTrueTypeFontRenderer;
 import tanks.Drawing;
 import tanks.Game;
 import tanks.gui.Button;
@@ -91,7 +92,7 @@ public class ScreenOptionsWindow extends Screen
             if (Game.fontCompatibility)
             {
                 fontCompatibility.setText(fontCompatibilityText, ScreenOptions.onText);
-                TruetypeFontRenderer ttf = new TruetypeFontRenderer((LWJGLWindow) Game.game.window, "/fonts/default/Bullet.ttf", 128, true, 1.4, 0.3);
+                BaseTrueTypeFontRenderer ttf = Game.game.window.createTrueTypeFontRenderer("/fonts/default/Bullet.ttf", 128, true, 1.4, 0.3);
                 ttf.addFontsFromDirectory(System.getProperty("user.home") + "/.tanks/fonts", 128, false, 1.4, 0.3);
                 Thread systemFontLoader = new Thread(() -> ttf.addSystemFonts(128, false, 1.4, 0.3), "system-font-loader");
                 systemFontLoader.setDaemon(true);
@@ -101,7 +102,7 @@ public class ScreenOptionsWindow extends Screen
             else
             {
                 fontCompatibility.setText(fontCompatibilityText, ScreenOptions.offText);
-                FontRenderer fonts = new FontRenderer((LWJGLWindow) Game.game.window, "/fonts/default/font.png");
+                BaseFontRenderer fonts = Game.game.window.createBitmapFontRenderer("/fonts/default/font.png");
                 Game.game.window.fontRenderer = fonts;
             }
         }

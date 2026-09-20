@@ -262,6 +262,11 @@ public abstract class BaseWindow
 
     public abstract void setViewport(int x, int y, int w, int h);
 
+    public abstract BaseFontRenderer createBitmapFontRenderer(String imageFile);
+
+    public abstract BaseTrueTypeFontRenderer createTrueTypeFontRenderer(String fontFile, int bakeHeight,
+        boolean pixelPerfect, double sizeScale, double yOffset);
+
     public abstract BaseFrameBuffer createFrameBuffer();
 
     public abstract void stopFrameBuffer();

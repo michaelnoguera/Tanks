@@ -1,6 +1,6 @@
 package lwjglwindow;
 
-import basewindow.BaseFontRenderer;
+import basewindow.BaseTrueTypeFontRenderer;
 
 import org.lwjgl.BufferUtils;
 import org.lwjgl.stb.STBTTFontinfo;
@@ -18,7 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.stb.STBTruetype.*;
 
-public class TruetypeFontRenderer extends BaseFontRenderer
+public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
 {
     public static final boolean print_debug = false;
 

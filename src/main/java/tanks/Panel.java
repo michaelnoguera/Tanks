@@ -1,7 +1,8 @@
 package tanks;
 
+import basewindow.BaseFontRenderer;
+import basewindow.BaseTrueTypeFontRenderer;
 import basewindow.InputCodes;
-import lwjglwindow.*;
 import tanks.extension.Extension;
 import tanks.gui.*;
 import tanks.gui.ScreenElement.CenterMessage;
@@ -153,7 +154,7 @@ public class Panel
 
         if (Game.fontCompatibility)
         {
-            TruetypeFontRenderer ttf = new TruetypeFontRenderer((LWJGLWindow) Game.game.window, "/fonts/default/Bullet.ttf", 128, true, 1.4, 0.3);
+            BaseTrueTypeFontRenderer ttf = Game.game.window.createTrueTypeFontRenderer("/fonts/default/Bullet.ttf", 128, true, 1.4, 0.3);
             ttf.addFontsFromDirectory(System.getProperty("user.home") + "/.tanks/fonts", 128, false, 1.4, 0.3);
             Thread systemFontLoader = new Thread(() -> ttf.addSystemFonts(128, false, 1.4, 0.3), "system-font-loader");
             systemFontLoader.setDaemon(true);
@@ -162,7 +163,7 @@ public class Panel
         }
         else
         {
-            FontRenderer fonts = new FontRenderer((LWJGLWindow) Game.game.window, "/fonts/default/font.png");
+            BaseFontRenderer fonts = Game.game.window.createBitmapFontRenderer("/fonts/default/font.png");
             Game.game.window.fontRenderer = fonts;
         }
 

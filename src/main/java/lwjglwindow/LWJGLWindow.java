@@ -1064,6 +1064,19 @@ public class LWJGLWindow extends BaseWindow
     }
 
     @Override
+    public BaseFontRenderer createBitmapFontRenderer(String imageFile)
+    {
+        return new FontRenderer(this, imageFile);
+    }
+
+    @Override
+    public BaseTrueTypeFontRenderer createTrueTypeFontRenderer(String fontFile, int bakeHeight,
+        boolean pixelPerfect, double sizeScale, double yOffset)
+    {
+        return new TruetypeFontRenderer(this, fontFile, bakeHeight, pixelPerfect, sizeScale, yOffset);
+    }
+
+    @Override
     public BaseFrameBuffer createFrameBuffer()
     {
         return new FrameBuffer();
