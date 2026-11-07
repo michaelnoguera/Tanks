@@ -37,7 +37,6 @@ public class DisplayFireworks
                 Firework f = new Firework(Firework.FireworkType.rocket, (Math.random() * 0.6 + 0.2) * Drawing.drawing.interfaceSizeX, Drawing.drawing.interfaceSizeY, getFireworkArray());
                 f.setRandomColor();
                 f.setVelocity();
-                getFireworkArray().add(f);
             }
 
             if (Crusade.crusadeMode && Crusade.currentCrusade.win)
@@ -56,7 +55,6 @@ public class DisplayFireworks
             Firework f = new Firework(Firework.FireworkType.rocket, (Math.random() * 0.6 + 0.2) * Drawing.drawing.interfaceSizeX, Drawing.drawing.interfaceSizeY, fireworks);
             f.setRandomColor();
             f.setVelocity();
-            getFireworkArray().add(f);
         }
 
         for (int i = 0; i < getFireworkArray().size(); i++)

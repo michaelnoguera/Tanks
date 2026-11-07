@@ -1332,16 +1332,22 @@ public class Drawing
 
     public void setLighting(double light, double shadow)
     {
-        Game.drawer.lightsPass.light = light;
-        Game.drawer.lightsPass.shadow = shadow;
+        if (Game.drawer.lightsPass != null)
+        {
+            Game.drawer.lightsPass.light = light;
+            Game.drawer.lightsPass.shadow = shadow;
+        }
         Game.game.window.mainRenderPasses.light = light;
         Game.game.window.mainRenderPasses.shadow = shadow;
+        if (Game.game.window.currentRenderPass == Game.game.window.mainRenderPasses.drawPass)
+            Game.game.window.setSceneLighting(light, shadow);
     }
 
     public void setLighting(double light, double shadow, Color color)
     {
         this.setLighting(light, shadow);
-        Game.drawer.lightsPass.setLightColor(color);
+        if (Game.drawer.lightsPass != null)
+            Game.drawer.lightsPass.setLightColor(color);
         Game.game.window.mainRenderPasses.setLightColor(color);
     }
 

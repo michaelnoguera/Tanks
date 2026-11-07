@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.Function;
 import javax.imageio.ImageIO;
 
 import static org.lwjgl.vulkan.VK11.*;
@@ -25,7 +27,43 @@ final class VulkanResources implements AutoCloseable
     long descriptorLayout;
     private long descriptorPool;
     private long sampler;
+    private long nearestSampler;
     private final Map<String, Texture> textures = new LinkedHashMap<>();
+    private final Map<String, PendingTexture> pendingTextures = new HashMap<>();
+    private Function<String, InputStream> textureSource;
+
+    private static final class PendingTexture
+    {
+        final int width;
+        final int height;
+        final byte[] rgba;
+
+        PendingTexture(int width, int height, byte[] rgba)
+        {
+            this.width = width;
+            this.height = height;
+            this.rgba = rgba;
+        }
+    }
+
+    /** Register a top-to-bottom RGBA8 image. The remaining bytes are snapshotted immediately. */
+    synchronized void registerTexture(String key, int width, int height, ByteBuffer rgba)
+    {
+        if (key == null || rgba == null) throw new NullPointerException("texture key/data");
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Texture dimensions must be positive");
+        int count = Math.toIntExact(Math.multiplyExact(Math.multiplyExact((long) width, height), 4L));
+        if (rgba.remaining() < count) throw new IllegalArgumentException("RGBA data is shorter than width*height*4");
+        byte[] copy = new byte[count];
+        rgba.duplicate().get(copy);
+        pendingTextures.put(key, new PendingTexture(width, height, copy));
+    }
+
+    /** Package-private hook for renderer-owned or test resource bundles. */
+    synchronized void setTextureSource(Function<String, InputStream> source)
+    {
+        if (source == null) throw new NullPointerException("source");
+        textureSource = source;
+    }
 
     VulkanResources(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, long commandPool)
     {
@@ -52,6 +90,11 @@ final class VulkanResources implements AutoCloseable
                     .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
                     .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).maxLod(0), null, handle), "create texture sampler");
             sampler = handle.get(0);
+            check(vkCreateSampler(device, VkSamplerCreateInfo.calloc(stack).sType$Default()
+                    .magFilter(VK_FILTER_NEAREST).minFilter(VK_FILTER_NEAREST).mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE).maxLod(0), null, handle), "create nearest texture sampler");
+            nearestSampler = handle.get(0);
         }
         catch (RuntimeException | Error failure)
         {
@@ -127,10 +170,25 @@ final class VulkanResources implements AutoCloseable
         }
     }
 
-    long texture(String resource)
+    synchronized long texture(String resource)
     {
         Texture cached = textures.get(resource);
-        if (cached != null) return cached.descriptor;
+        PendingTexture pending = pendingTextures.get(resource);
+        if (cached != null)
+        {
+            if (pending != null)
+            {
+                updateTexture(cached, pending);
+                pendingTextures.remove(resource);
+            }
+            return cached.descriptor;
+        }
+        if (pending != null)
+        {
+            long descriptor = createTexture(resource, pending.width, pending.height, pending.rgba);
+            pendingTextures.remove(resource);
+            return descriptor;
+        }
         BufferedImage pixels;
         if (resource == null)
         {
@@ -139,8 +197,8 @@ final class VulkanResources implements AutoCloseable
         }
         else
         {
-            String path = resource.startsWith("/") ? resource : "/" + resource;
-            try (InputStream input = VulkanResources.class.getResourceAsStream(path))
+            String path = normalizeResourcePath(resource);
+            try (InputStream input = openTexture(path))
             {
                 if (input == null) throw new IllegalArgumentException("Missing texture " + path);
                 pixels = ImageIO.read(input);
@@ -165,17 +223,11 @@ final class VulkanResources implements AutoCloseable
             finally { staging.unmap(); }
             texture.image = image(pixels.getWidth(), pixels.getHeight(), VK_FORMAT_R8G8B8A8_UNORM,
                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-            upload(stack, staging, texture.image, pixels.getWidth(), pixels.getHeight());
-            LongBuffer handle = stack.mallocLong(1);
-            check(vkAllocateDescriptorSets(device, VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
-                    .descriptorPool(descriptorPool).pSetLayouts(stack.longs(descriptorLayout)), handle), "allocate texture descriptor");
-            texture.descriptor = handle.get(0);
-            VkDescriptorImageInfo.Buffer sampled = VkDescriptorImageInfo.calloc(1, stack);
-            sampled.get(0).sampler(sampler).imageView(texture.image.view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
-            write.get(0).sType$Default().dstSet(texture.descriptor).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).pImageInfo(sampled);
-            vkUpdateDescriptorSets(device, write, null);
+            texture.width = pixels.getWidth();
+            texture.height = pixels.getHeight();
+            texture.nearest = usesNearestSampler(resource);
+            upload(stack, staging, texture.image, pixels.getWidth(), pixels.getHeight(), false);
+            allocateDescriptor(stack, texture);
             textures.put(resource, texture);
             return texture.descriptor;
         }
@@ -186,7 +238,110 @@ final class VulkanResources implements AutoCloseable
         }
     }
 
-    private void upload(MemoryStack stack, Buffer staging, Image target, int width, int height)
+    private InputStream openTexture(String path)
+    {
+        InputStream input = textureSource == null ? null : textureSource.apply(path);
+        if (input == null) input = VulkanResources.class.getResourceAsStream(path);
+        if (input == null && !"/missing.png".equals(path))
+        {
+            input = textureSource == null ? null : textureSource.apply("/missing.png");
+            if (input == null) input = VulkanResources.class.getResourceAsStream("/missing.png");
+        }
+        if (input == null) throw new IllegalArgumentException("Missing texture " + path + " (and /missing.png fallback)");
+        return input;
+    }
+
+    private static String normalizeResourcePath(String resource)
+    {
+        String path = resource.replace('\\', '/');
+        while (path.startsWith("/")) path = path.substring(1);
+        return "/" + path;
+    }
+
+    private static boolean usesNearestSampler(String key)
+    {
+        if (key == null) return false;
+        String path = key.replace('\\', '/');
+        return path.contains("/fonts/") || path.startsWith("fonts/") || path.startsWith("/fonts/");
+    }
+
+    private long createTexture(String key, int width, int height, byte[] rgba)
+    {
+        Texture texture = new Texture();
+        try (MemoryStack stack = MemoryStack.stackPush(); Buffer staging = buffer((long) rgba.length, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+        {
+            ByteBuffer bytes = staging.map(stack);
+            try { bytes.put(rgba); }
+            finally { staging.unmap(); }
+            texture.image = image(width, height, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            texture.width = width;
+            texture.height = height;
+            texture.nearest = usesNearestSampler(key);
+            upload(stack, staging, texture.image, width, height, false);
+            allocateDescriptor(stack, texture);
+            textures.put(key, texture);
+            return texture.descriptor;
+        }
+        catch (RuntimeException | Error failure)
+        {
+            if (texture.image != null) texture.image.close();
+            throw failure;
+        }
+    }
+
+    private void updateTexture(Texture texture, PendingTexture pending)
+    {
+        try (MemoryStack stack = MemoryStack.stackPush(); Buffer staging = buffer((long) pending.rgba.length, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+        {
+            ByteBuffer bytes = staging.map(stack);
+            try { bytes.put(pending.rgba); }
+            finally { staging.unmap(); }
+            if (texture.image.handle != 0 && texture.width == pending.width && texture.height == pending.height)
+                upload(stack, staging, texture.image, pending.width, pending.height, true);
+            else
+            {
+                Image replacement = image(pending.width, pending.height, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                try
+                {
+                    upload(stack, staging, replacement, pending.width, pending.height, false);
+                }
+                catch (RuntimeException | Error failure)
+                {
+                    replacement.close();
+                    throw failure;
+                }
+                Image old = texture.image;
+                texture.image = replacement;
+                texture.width = pending.width;
+                texture.height = pending.height;
+                writeDescriptor(stack, texture);
+                if (old != null) old.close();
+            }
+        }
+    }
+
+    private void allocateDescriptor(MemoryStack stack, Texture texture)
+    {
+        LongBuffer handle = stack.mallocLong(1);
+        check(vkAllocateDescriptorSets(device, VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+                .descriptorPool(descriptorPool).pSetLayouts(stack.longs(descriptorLayout)), handle), "allocate texture descriptor");
+        texture.descriptor = handle.get(0);
+        writeDescriptor(stack, texture);
+    }
+
+    private void writeDescriptor(MemoryStack stack, Texture texture)
+    {
+        VkDescriptorImageInfo.Buffer sampled = VkDescriptorImageInfo.calloc(1, stack);
+        sampled.get(0).sampler(texture.nearest ? nearestSampler : sampler).imageView(texture.image.view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
+        write.get(0).sType$Default().dstSet(texture.descriptor).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                .descriptorCount(1).pImageInfo(sampled);
+        vkUpdateDescriptorSets(device, write, null);
+    }
+
+    private void upload(MemoryStack stack, Buffer staging, Image target, int width, int height, boolean update)
     {
         PointerBuffer pointer = stack.mallocPointer(1);
         check(vkAllocateCommandBuffers(device, VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
@@ -196,8 +351,9 @@ final class VulkanResources implements AutoCloseable
         {
             check(vkBeginCommandBuffer(command, VkCommandBufferBeginInfo.calloc(stack).sType$Default()
                     .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin texture upload");
-            barrier(stack, command, target.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            barrier(stack, command, target.handle, update ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    update ? VK_ACCESS_SHADER_READ_BIT : 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    update ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
             region.get(0).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).layerCount(1);
             region.get(0).imageExtent().set(width, height, 1);
@@ -266,6 +422,9 @@ final class VulkanResources implements AutoCloseable
     {
         Image image;
         long descriptor;
+        int width;
+        int height;
+        boolean nearest;
     }
 
     @Override public void close()
@@ -274,8 +433,11 @@ final class VulkanResources implements AutoCloseable
         descriptorPool = 0;
         for (Texture texture: textures.values()) texture.image.close();
         textures.clear();
+        pendingTextures.clear();
         if (sampler != 0) vkDestroySampler(device, sampler, null);
         sampler = 0;
+        if (nearestSampler != 0) vkDestroySampler(device, nearestSampler, null);
+        nearestSampler = 0;
         if (descriptorLayout != 0) vkDestroyDescriptorSetLayout(device, descriptorLayout, null);
         descriptorLayout = 0;
     }

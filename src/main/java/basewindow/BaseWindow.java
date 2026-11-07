@@ -158,22 +158,13 @@ public abstract class BaseWindow
 
     public void startTiming()
     {
-        long milliTime = System.currentTimeMillis();
-
-        this.framesList.add(System.nanoTime());
-
-        ArrayList<Long> removeList = new ArrayList<>();
-
-        for (Long l: this.framesList)
-        {
-            if (milliTime - l > 1000)
-                removeList.add(l);
-        }
-
-        for (Long l: removeList)
-        {
-            this.framesList.remove(l);
-        }
+        long now = System.nanoTime();
+        int expired = 0;
+        while (expired < this.framesList.size() && now - this.framesList.get(expired) >= 1_000_000_000L)
+            expired++;
+        if (expired > 0)
+            this.framesList.subList(0, expired).clear();
+        this.framesList.add(now);
     }
 
     public void stopTiming()
@@ -191,6 +182,25 @@ public abstract class BaseWindow
     }
 
     public abstract void run();
+
+    public boolean supportsAdvancedLighting()
+    {
+        return true;
+    }
+
+    public boolean supportsShadows()
+    {
+        return supportsAdvancedLighting();
+    }
+
+    public void setAmbientLight(double intensity)
+    {
+    }
+
+    public void setSceneLighting(double light, double shadow)
+    {
+        setAmbientLight(light);
+    }
 
     public abstract void setShowCursor(boolean show);
 

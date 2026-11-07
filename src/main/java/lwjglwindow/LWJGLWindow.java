@@ -33,6 +33,7 @@ public class LWJGLWindow extends BaseWindow
 {
     protected long window;
     protected GLFWVidMode vidmode;
+    private boolean glfwInitialized;
 
     protected String audioDevice;
 
@@ -64,15 +65,15 @@ public class LWJGLWindow extends BaseWindow
 
     protected int lightTex;
 
-    double bbx1 = 1;
-    double bby1 = 0;
-    double bbz1 = 0;
-    double bbx2 = 0;
-    double bby2 = 1;
-    double bbz2 = 0;
-    double bbx3 = 0;
-    double bby3 = 0;
-    double bbz3 = 1;
+    protected double bbx1 = 1;
+    protected double bby1 = 0;
+    protected double bbz1 = 0;
+    protected double bbx2 = 0;
+    protected double bby2 = 1;
+    protected double bbz2 = 0;
+    protected double bbx3 = 0;
+    protected double bby3 = 0;
+    protected double bbz3 = 1;
 
     public String currentTexture = null;
 
@@ -114,19 +115,81 @@ public class LWJGLWindow extends BaseWindow
 
     public void run()
     {
-        init();
-        loop();
+        try
+        {
+            init();
+            loop();
+        }
+        finally
+        {
+            try
+            {
+                beforeWindowDestroy();
+            }
+            finally
+            {
+                try
+                {
+                    if (window != NULL)
+                    {
+                        glfwFreeCallbacks(window);
+                        glfwDestroyWindow(window);
+                        window = NULL;
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        if (glfwInitialized)
+                        {
+                            glfwTerminate();
+                            glfwInitialized = false;
+                        }
 
-        glfwFreeCallbacks(window);
-        glfwDestroyWindow(window);
+                        GLFWErrorCallback errorCallback = glfwSetErrorCallback(null);
+                        if (errorCallback != null)
+                            errorCallback.free();
+                    }
+                    finally
+                    {
+                        afterGlfwTerminate();
+                    }
+                }
+            }
+        }
+        System.exit(0);
+    }
 
-        glfwTerminate();
-        glfwSetErrorCallback(null).free();
+    /** Releases backend resources that need the native window to remain alive. */
+    protected void beforeWindowDestroy()
+    {
+    }
+
+    /** Releases backend resources after GLFW has been shut down. */
+    protected void afterGlfwTerminate()
+    {
+    }
+
+    protected void beforeGlfwInit()
+    {
+    }
+
+    protected void configureWindow()
+    {
+        if (antialiasingEnabled)
+            glfwWindowHint(GLFW_SAMPLES, 4);
+    }
+
+    protected void initializeGraphicsContext()
+    {
+        glfwMakeContextCurrent(window);
+        setVsync(vsync);
     }
 
     protected void init()
     {
-        this.fontRenderer = new FontRenderer(this, "/fonts/default/font.png");
+        this.fontRenderer = createBitmapFontRenderer("/fonts/default/font.png");
 
 
         GLFWErrorCallback.createPrint(System.err).set();
@@ -134,15 +197,16 @@ public class LWJGLWindow extends BaseWindow
         if (System.getProperty("os.name").toLowerCase().contains("linux"))
             GLFW.glfwInitHint(GLFW.GLFW_PLATFORM, GLFW.GLFW_PLATFORM_X11);
 
+        beforeGlfwInit();
         if (!glfwInit())
             throw new IllegalStateException("Unable to initialize GLFW");
+        glfwInitialized = true;
 
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-        if (antialiasingEnabled)
-            glfwWindowHint(GLFW_SAMPLES, 4);
+        configureWindow();
 
         window = glfwCreateWindow((int) this.absoluteWidth, (int) this.absoluteHeight, this.name, NULL, NULL);
         if (window == NULL)
@@ -224,15 +288,8 @@ public class LWJGLWindow extends BaseWindow
             glfwSetWindowPos(window, (vidmode.width() - pWidth.get(0)) / 2, (vidmode.height() - pHeight.get(0)) / 2);
         }
 
-        glfwMakeContextCurrent(window);
-
+        initializeGraphicsContext();
         this.setShowCursor(this.showMouseOnLaunch);
-
-        if (vsync)
-            GLFW.glfwSwapInterval(1);
-        else
-            GLFW.glfwSwapInterval(0);
-
         glfwShowWindow(window);
     }
 
@@ -338,6 +395,11 @@ public class LWJGLWindow extends BaseWindow
 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 
+        runFrames();
+    }
+
+    protected void runFrames()
+    {
         boolean shouldClose = false;
 
         while (!shouldClose)
@@ -349,8 +411,16 @@ public class LWJGLWindow extends BaseWindow
 
         if (this.soundsEnabled)
             this.soundPlayer.exit();
+    }
 
-        System.exit(0);
+    protected void beginFrame()
+    {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
+
+    protected void presentFrame()
+    {
+        glfwSwapBuffers(window);
     }
 
     protected boolean tick(boolean resizing)
@@ -369,7 +439,7 @@ public class LWJGLWindow extends BaseWindow
         if (soundPlayer != null)
             soundPlayer.update();
 
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        beginFrame();
 
         glfwGetWindowSize(window, w, h);
 
@@ -414,7 +484,7 @@ public class LWJGLWindow extends BaseWindow
         this.updater.update();
         this.drawer.draw();
 
-        glfwSwapBuffers(window);
+        presentFrame();
 
         if (!resizing)
             glfwPollEvents();
@@ -751,6 +821,11 @@ public class LWJGLWindow extends BaseWindow
                     m, absoluteDepth * m * clipDistMultiplier);
         }
 
+        resetViewState();
+    }
+
+    protected void resetViewState()
+    {
         this.angled = false;
 
         this.yaw = 0;

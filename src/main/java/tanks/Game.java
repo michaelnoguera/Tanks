@@ -177,6 +177,16 @@ public class Game
 
     public static boolean fancyLights = true;
 
+    public static boolean fancyLightsActive()
+    {
+        return fancyLights && game.window.supportsAdvancedLighting();
+    }
+
+    public static boolean shadowsActive()
+    {
+        return shadowsEnabled && game.window.supportsShadows();
+    }
+
     public static boolean tankTextures = true;
 
     public static boolean soundsEnabled = true;

@@ -2,8 +2,6 @@ package lwjglwindow;
 
 import basewindow.BaseFontRenderer;
 
-import org.lwjgl.opengl.GL11;
-
 import java.util.*;
 
 public class FontRenderer extends BaseFontRenderer

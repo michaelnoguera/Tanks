@@ -765,7 +765,7 @@ public abstract class Tank extends Movable implements ISolidObject, IDrawableLig
         Drawing drawing = Drawing.drawing;
         double[] teamColor = Team.getObjectColor(this.secondaryColor.red, this.secondaryColor.green, this.secondaryColor.blue, this);
         double[] lightColor = teamColor;
-        if ((!Game.fancyLights || forInterface) && this.overrideGlowColor)
+        if ((!Game.fancyLightsActive() || forInterface) && this.overrideGlowColor)
         {
             lightColor = this.drawLightColor;
             lightColor[0] = this.glowColor.red;
@@ -780,7 +780,7 @@ public abstract class Tank extends Movable implements ISolidObject, IDrawableLig
         {
             double gs = this.glowSize;
 
-            if (gs > 4 && Game.fancyLights)
+            if (gs > 4 && Game.fancyLightsActive())
                 gs = 4;
 
             if (forInterface && gs > 8)

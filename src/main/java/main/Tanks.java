@@ -6,16 +6,22 @@ import tanks.*;
 import tanks.extension.Extension;
 import tanksonline.*;
 
+import vulkanwindow.VulkanGameWindow;
+
 import java.awt.FlowLayout;
 import java.awt.event.WindowEvent;
 import java.awt.event.WindowListener;
 import java.io.*;
+import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Properties;
 import javax.swing.*;
 
 public class Tanks
 {
+    private static boolean vulkanLaunch;
+
     public static void main(String[] args)
     {
         // On macOS GLFW must own the Cocoa main thread (that's why we launch with -XstartOnFirstThread).
@@ -30,6 +36,7 @@ public class Tanks
 
         Game.framework = Game.Framework.lwjgl;
         int port = 8080;
+        boolean vulkan = false;
 
         // Relaunches the .jar if Mac OS X is detected.
         boolean relaunch = System.getProperties().toString().contains("Mac OS X");
@@ -42,6 +49,8 @@ public class Tanks
                 Game.isOnlineServer = true;
             if (arg.matches("port=\\d+"))
                 port = Integer.parseInt(arg.split("=")[1]);
+            if (arg.equals("--vulkan"))
+                vulkan = true;
             if (arg.equals("debug"))
                 Game.debug = true;
             if (arg.equals("mac") || arg.equals("no_relaunch"))
@@ -63,6 +72,10 @@ public class Tanks
             i++;
         }
 
+        vulkanLaunch = vulkan;
+        // Expose the selected backend to startup validation without changing saved preferences.
+        System.setProperty("tanks.vulkan", Boolean.toString(vulkan));
+
         if (!Game.isOnlineServer)
         {
             try
@@ -77,14 +90,45 @@ public class Tanks
                     {
                         if (path.endsWith(".jar"))
                         {
-                            String[] command = new String[]{"java", "-XstartOnFirstThread", "-Djava.awt.headless=true", "-jar", path, "mac"};
-                            Runtime.getRuntime().exec(command);
-                            Runtime.getRuntime().exit(0);
+                            if (vulkan)
+                            {
+                                ArrayList<String> command = new ArrayList<>();
+                                command.add(new File(System.getProperty("java.home"), "bin/java").getPath());
+                                command.add("-XstartOnFirstThread");
+                                for (String jvmArgument: ManagementFactory.getRuntimeMXBean().getInputArguments())
+                                {
+                                    if (!jvmArgument.equals("-XstartOnFirstThread") &&
+                                        !jvmArgument.equals("-Djava.awt.headless=true"))
+                                        command.add(jvmArgument);
+                                }
+                                command.add("-Djava.awt.headless=true");
+                                command.add("-jar");
+                                command.add(path);
+                                command.add("mac");
+                                command.addAll(Arrays.asList(args));
+                                int exitCode = new ProcessBuilder(command).inheritIO().start().waitFor();
+                                System.exit(exitCode);
+                            }
+                            else
+                            {
+                                String[] command = new String[args.length + 6];
+                                command[0] = new File(System.getProperty("java.home"), "bin/java").getPath();
+                                command[1] = "-XstartOnFirstThread";
+                                command[2] = "-Djava.awt.headless=true";
+                                command[3] = "-jar";
+                                command[4] = path;
+                                command[5] = "mac";
+                                System.arraycopy(args, 0, command, 6, args.length);
+                                Runtime.getRuntime().exec(command);
+                                Runtime.getRuntime().exit(0);
+                            }
                             return;
                         }
                     }
                     catch (Exception e)
                     {
+                        if (vulkan)
+                            throw e;
                         e.printStackTrace();
                     }
                 }
@@ -97,8 +141,11 @@ public class Tanks
                 if (Game.framework == Game.Framework.lwjgl)
                 {
                     Game.drawer = new GameDrawer();
-                    // Creates and configures the LWJGL window.
-                    Game.game.window = new LWJGLWindow(
+                    Game.game.window = vulkan ?
+                        new VulkanGameWindow("Tanks — Vulkan", 1400, 900 + Drawing.drawing.statsHeight,
+                            Game.absoluteDepthBase, new GameUpdater(), Game.drawer, new GameWindowHandler(),
+                            Game.vsync, !Panel.showMouseTarget)
+                        : new LWJGLWindow(
                             "Tanks",
                             1400, 900 + Drawing.drawing.statsHeight,
                             Game.absoluteDepthBase,
@@ -160,6 +207,13 @@ public class Tanks
 
         Game.logger.println(errorMsg + "System properties:\n" + props + "\n");
         System.err.println(errorMsg);
+
+        // Vulkan startup failures should be scriptable and must not block on a Swing dialog.
+        if (vulkanLaunch)
+        {
+            System.err.println("Vulkan launch failed. Check that your GPU and drivers support Vulkan, and try launching without --vulkan to use OpenGL.\n");
+            System.exit(1);
+        }
 
         if (props.toString().contains("Mac OS X"))
             System.exit(0);

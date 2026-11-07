@@ -16,6 +16,7 @@ import static org.lwjgl.glfw.GLFWVulkan.glfwInitVulkanLoader;
 public final class VulkanWindow implements AutoCloseable
 {
     private long handle;
+    private boolean ownsWindow;
     private boolean glfwInitialized;
     private boolean loaderInitialized;
     private GLFWErrorCallback errorCallback;
@@ -29,25 +30,60 @@ public final class VulkanWindow implements AutoCloseable
     {
         try
         {
-            Configuration.VULKAN_EXPLICIT_INIT.set(true);
-            VK.create();
+            initializeLoader();
             loaderInitialized = true;
             errorCallback = GLFWErrorCallback.createPrint(System.err);
             glfwSetErrorCallback(errorCallback);
-            glfwInitVulkanLoader(VK.getFunctionProvider().getFunctionAddress("vkGetInstanceProcAddr"));
             glfwInitialized = glfwInit();
             if (!glfwInitialized) throw new IllegalStateException("GLFW initialization failed");
             glfwDefaultWindowHints();
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
             handle = glfwCreateWindow(width, height, title, 0, 0);
             if (handle == 0) throw new IllegalStateException("Vulkan window creation failed");
-            glfwSetFramebufferSizeCallback(handle, (window, w, h) -> resized = true);
+            ownsWindow = true;
+            watchFramebufferSize();
         }
         catch (RuntimeException | Error failure)
         {
             close();
             throw failure;
         }
+    }
+
+    /** Tracks a window whose GLFW lifecycle is managed by the game. */
+    VulkanWindow(long handle)
+    {
+        this.handle = handle;
+        watchFramebufferSize();
+    }
+
+    static void initializeLoader()
+    {
+        Configuration.VULKAN_EXPLICIT_INIT.set(true);
+        VK.create();
+        try
+        {
+            glfwInitVulkanLoader(VK.getFunctionProvider().getFunctionAddress("vkGetInstanceProcAddr"));
+        }
+        catch (RuntimeException | Error failure)
+        {
+            // VK.create() succeeded, but GLFW cannot use the loader. Do not leave
+            // the shared LWJGL Vulkan provider initialized after failed setup.
+            try
+            {
+                VK.destroy();
+            }
+            catch (RuntimeException | Error cleanupFailure)
+            {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private void watchFramebufferSize()
+    {
+        glfwSetFramebufferSizeCallback(handle, (window, w, h) -> resized = true);
     }
 
     public long handle() { return handle; }
@@ -104,7 +140,7 @@ public final class VulkanWindow implements AutoCloseable
     @Override
     public void close()
     {
-        if (handle != 0)
+        if (ownsWindow && handle != 0)
         {
             Callbacks.glfwFreeCallbacks(handle);
             glfwDestroyWindow(handle);

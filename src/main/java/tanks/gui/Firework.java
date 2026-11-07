@@ -118,7 +118,6 @@ public class Firework extends Movable
             {
                 this.position = new FireworkPosition(this);
                 this.lastPosition = this.position;
-                this.position.isFirst = true;
             }
 
             if (!this.exploded)
@@ -128,14 +127,13 @@ public class Firework extends Movable
                 this.lastPosition = pos;
             }
 
+            // Keep the last expired point as a transparent endpoint for the taper.
+            while (this.position.next != null && this.position.next.age >= this.position.next.maxAge)
+                this.position = this.position.next;
+
             Game.game.window.shapeRenderer.setBatchMode(true, false, false, false, false);
             this.position.draw();
             Game.game.window.shapeRenderer.setBatchMode(false, false, false, false, false);
-
-            while (this.position.next != null && this.position.expired)
-            {
-                this.position = this.position.next;
-            }
 
             if (!this.exploded)
             {
@@ -643,13 +641,11 @@ public class Firework extends Movable
         public double posY;
         public double posZ;
         public double age;
-        public boolean isFirst = false;
 
         public double oX;
         public double oY;
 
         public double maxAge = trail_length;
-        public boolean expired = false;
 
         public Firework firework;
 
@@ -675,44 +671,42 @@ public class Firework extends Movable
             }
         }
 
+        private double lifeRemaining()
+        {
+            return Math.max(0, 1 - this.age / this.maxAge);
+        }
+
         public void draw()
         {
-            double s = Math.max(0, this.firework.size - (this.age * this.firework.size / this.maxAge)) * 0.75;
-            double a = 0.5;
-
-            if (s < 0)
-                s = 0;
+            double life = this.lifeRemaining();
+            double s = this.firework.size * life * 0.75;
+            double a = 255 * life * 0.5;
 
             if (next != null)
             {
-                double s2 = Math.max(0, next.firework.size - (next.age * this.firework.size / next.maxAge)) * 0.75;
+                double nextLife = next.lifeRemaining();
+                double s2 = this.firework.size * nextLife * 0.75;
 
-                if (s2 < 0)
-                {
-                    this.expired = true;
-                    return;
-                }
-
-                Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a * Math.max(0, Math.min(255, 255 - (this.age * 255.0 / this.maxAge))));
+                Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a);
 
                 Drawing.drawing.addInterfaceVertex(this.posX + this.oX * s, this.posY + this.oY * s, this.posZ);
                 Drawing.drawing.addInterfaceVertex(this.posX - this.oX * s, this.posY - this.oY * s, this.posZ);
 
-                Drawing.drawing.setColor(next.firework.colorR, next.firework.colorG, next.firework.colorB, a * Math.max(0, Math.min(255, 255 - (next.age * 255.0 / next.maxAge))));
+                Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, 255 * nextLife * 0.5);
 
                 Drawing.drawing.addInterfaceVertex(next.posX + next.oX * s2, next.posY + next.oY * s2, next.posZ);
 
                 Drawing.drawing.addInterfaceVertex(next.posX + next.oX * s2, next.posY + next.oY * s2, next.posZ);
                 Drawing.drawing.addInterfaceVertex(next.posX - next.oX * s2, next.posY - next.oY * s2, next.posZ);
 
-                Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a * Math.max(0, Math.min(255, 255 - (this.age * 255.0 / this.maxAge))));
+                Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a);
 
                 Drawing.drawing.addInterfaceVertex(this.posX - this.oX * s, this.posY - this.oY * s, this.posZ);
 
                 this.next.draw();
             }
 
-            if (next == null || isFirst)
+            if (s > 0 && (next == null || this == firework.position))
             {
                 int sign = 1;
 
@@ -727,7 +721,7 @@ public class Firework extends Movable
                     double a1 = angle + Math.PI * i / sides * sign;
                     double a2 = angle + Math.PI * (i + 1) / sides * sign;
 
-                    Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a * Math.max(0, Math.min(255, 255 - (this.age * 255.0 / this.maxAge))));
+                    Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, a);
                     Drawing.drawing.addInterfaceVertex(this.posX + Math.cos(a1) * s / 2, this.posY + Math.sin(a1) * s / 2, this.posZ);
                     Drawing.drawing.addInterfaceVertex(this.posX + Math.cos(a2) * s / 2, this.posY + Math.sin(a2) * s / 2, this.posZ);
                     Drawing.drawing.addInterfaceVertex(this.posX, this.posY, this.posZ);
@@ -739,23 +733,15 @@ public class Firework extends Movable
 
         public void drawGlow()
         {
-            double s = Math.max(0, this.firework.size - (this.age * this.firework.size / this.maxAge)) * 3;
-            double a = Math.min(255, 255 - (this.age * 255.0 / this.maxAge)) / 255.0 * 0.75;
+            double life = this.lifeRemaining();
+            double s = this.firework.size * life * 3;
+            double a = 255 * life * 0.75;
 
             if (next != null)
             {
-                double s2 = Math.max(0, next.firework.size - (next.age * this.firework.size / next.maxAge)) * 3;
-
-                double a2 = Math.min(255, 255 - (next.age * 255.0 / next.maxAge)) / 255.0 * 0.75;
-
-                if (s < 0)
-                    s = 0;
-
-                if (s2 < 0)
-                {
-                    this.expired = true;
-                    return;
-                }
+                double nextLife = next.lifeRemaining();
+                double s2 = this.firework.size * nextLife * 3;
+                double a2 = 255 * nextLife * 0.75;
 
                 Drawing.drawing.setColor(firework.colorR, firework.colorG, firework.colorB, 0);
                 Drawing.drawing.addInterfaceVertex(this.posX + this.oX * s, this.posY + this.oY * s, this.posZ);
@@ -790,7 +776,7 @@ public class Firework extends Movable
                 this.next.drawGlow();
             }
 
-            if (next == null || isFirst)
+            if (s > 0 && (next == null || this == firework.position))
             {
                 int sign = 1;
 

@@ -69,7 +69,7 @@ public class ObstacleLight extends Obstacle implements IDrawableLightSource
         double frac = Obstacle.draw_size / Game.tile_size * 0.75;
         Drawing.drawing.setColor(this.colorR * frac, this.colorG * frac, this.colorB * frac, this.colorA, this.glow);
 
-//        if (!Game.fancyLights)
+//        if (!Game.fancyLightsActive())
         Drawing.drawing.fillLargeGlow(this.posX, this.posY, 0, s, s, false, false, false, false);
     }
 
@@ -140,7 +140,7 @@ public class ObstacleLight extends Obstacle implements IDrawableLightSource
     @Override
     public boolean lit()
     {
-        return Game.fancyLights;
+        return Game.fancyLightsActive();
     }
 
     @Override

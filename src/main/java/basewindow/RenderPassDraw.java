@@ -21,6 +21,9 @@ public class RenderPassDraw extends RenderPass
     {
         super(pg.window, "draw");
         this.passGroup = pg;
+        if (!pg.window.supportsAdvancedLighting())
+            return;
+
         this.drawFrameBuffer = pg.window.createFrameBuffer();
 
         // Main drawing
@@ -39,6 +42,22 @@ public class RenderPassDraw extends RenderPass
     public void draw()
     {
         super.draw();
+
+        if (this.drawFrameBuffer == null)
+        {
+            this.window.setShader(this.passGroup.shaderGroup);
+            this.window.loadPerspective();
+            this.window.setSceneLighting(this.passGroup.light, this.passGroup.shadow);
+            try
+            {
+                this.window.drawer.drawSinglePass(this);
+            }
+            finally
+            {
+                this.window.setAmbientLight(1);
+            }
+            return;
+        }
 
         if (this.passGroup.drawToFramebuffer)
         {

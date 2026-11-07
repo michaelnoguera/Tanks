@@ -1558,7 +1558,7 @@ public class Bullet extends Movable implements ICopyable<Bullet>, ITanksONEditab
                 Drawing.drawing.setColor(this.effect.glowColor.red, this.effect.glowColor.green, this.effect.glowColor.blue, 255 * glow, shade ? luminance : 1);
 
             double sizeMul = this.effect.glowSize;
-            if (Game.fancyLights && this.effect.glowGlowy)
+            if (Game.fancyLightsActive() && this.effect.glowGlowy)
                 sizeMul = Math.min(sizeMul, 4);
 
             if (this.destroyTimer < 60.0)

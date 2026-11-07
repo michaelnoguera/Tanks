@@ -5,6 +5,8 @@ import basewindow.BaseTrueTypeFontRenderer;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.stb.STBTTFontinfo;
 import org.lwjgl.system.MemoryStack;
+import vulkanwindow.VulkanGameWindow;
+import vulkanwindow.VulkanShapeRenderer;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -63,6 +65,11 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
         private int atlasPenX = 0;                    // shelf-packing cursor within the current page
         private int atlasPenY = 0;
         private int atlasShelfHeight = 0;
+        private static final java.util.concurrent.atomic.AtomicInteger NEXT_ATLAS_ID = new java.util.concurrent.atomic.AtomicInteger();
+        private final int atlasId = NEXT_ATLAS_ID.incrementAndGet();
+        private int nextVulkanPage = 1;
+        private final Map<Integer, ByteBuffer> vulkanAtlasPages = new HashMap<>();
+        private final Set<Integer> dirtyVulkanAtlasPages = new HashSet<>();
 
         // glyphId -> {pageTex, atlasX, atlasY}; a mapping present with null value marks a glyph that has
         // no pixels (e.g. a space), so it's recorded as "resolved" but never drawn.
@@ -339,6 +346,11 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
          */
         public int[] getOrCreateGlyphSlot(int glyphId)
         {
+            return getOrCreateGlyphSlot(glyphId, null);
+        }
+
+        public int[] getOrCreateGlyphSlot(int glyphId, VulkanGameWindow vulkanWindow)
+        {
             if (glyphSlots.containsKey(glyphId))
                 return glyphSlots.get(glyphId);
 
@@ -375,10 +387,30 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
                 }
                 la.flip();
 
-                int[] slot = allocAtlasRect(bw, bh);   // {pageTex, x, y}
-                glBindTexture(GL_TEXTURE_2D, slot[0]);
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                glTexSubImage2D(GL_TEXTURE_2D, 0, slot[1], slot[2], bw, bh, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, la);
+                int[] slot = allocAtlasRect(bw, bh, vulkanWindow);   // {page, x, y}
+                if (vulkanWindow == null)
+                {
+                    glBindTexture(GL_TEXTURE_2D, slot[0]);
+                    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, slot[1], slot[2], bw, bh, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, la);
+                }
+                else
+                {
+                    ByteBuffer page = vulkanAtlasPages.get(slot[0]);
+                    for (int y = 0; y < bh; y++)
+                    {
+                        for (int x = 0; x < bw; x++)
+                        {
+                            int alpha = la.get((y * bw + x) * 2 + 1) & 0xFF;
+                            int offset = ((slot[2] + y) * ATLAS_SIZE + slot[1] + x) * 4;
+                            page.put(offset, (byte) 0xFF);
+                            page.put(offset + 1, (byte) 0xFF);
+                            page.put(offset + 2, (byte) 0xFF);
+                            page.put(offset + 3, (byte) alpha);
+                        }
+                    }
+                    dirtyVulkanAtlasPages.add(slot[0]);
+                }
 
                 stbtt_FreeBitmap(bitmap);
 
@@ -390,13 +422,31 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
         }
 
         /** Reserves a {@code bw × bh} rectangle (plus padding) on an atlas page via shelf packing. */
-        private int[] allocAtlasRect(int bw, int bh)
+        private String vulkanTextureKey(int page)
+        {
+            String prefix = pixelPerfect ? "/fonts/nearest/ttf_atlas_" : "__ttf_atlas_";
+            return prefix + atlasId + "_" + page;
+        }
+
+        /** Upload each modified Vulkan page once after a caller has rasterized its complete glyph run. */
+        private void uploadDirtyVulkanAtlasPages(VulkanGameWindow vulkanWindow)
+        {
+            if (vulkanWindow == null || dirtyVulkanAtlasPages.isEmpty())
+                return;
+
+            for (Integer pageId: dirtyVulkanAtlasPages)
+                vulkanWindow.registerTexture(vulkanTextureKey(pageId), ATLAS_SIZE, ATLAS_SIZE,
+                        vulkanAtlasPages.get(pageId));
+            dirtyVulkanAtlasPages.clear();
+        }
+
+        private int[] allocAtlasRect(int bw, int bh, VulkanGameWindow vulkanWindow)
         {
             int needW = bw + ATLAS_PAD;
             int needH = bh + ATLAS_PAD;
 
             if (atlasPageTex == 0)
-                newAtlasPage();
+                newAtlasPage(vulkanWindow);
 
             if (atlasPenX + needW > ATLAS_SIZE)   // no room on this shelf: start the next one
             {
@@ -405,7 +455,7 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
                 atlasShelfHeight = 0;
             }
             if (atlasPenY + needH > ATLAS_SIZE)   // page full: open a fresh page
-                newAtlasPage();
+                newAtlasPage(vulkanWindow);
 
             int x = atlasPenX;
             int y = atlasPenY;
@@ -417,8 +467,24 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
         }
 
         /** Allocates a new, zero-initialized atlas page and makes it current (resets the shelf pen). */
-        private void newAtlasPage()
+        private void newAtlasPage(VulkanGameWindow vulkanWindow)
         {
+            if (vulkanWindow != null)
+            {
+                atlasPageTex = nextVulkanPage++;
+                ByteBuffer page = BufferUtils.createByteBuffer(ATLAS_SIZE * ATLAS_SIZE * 4);
+                for (int i = 0; i < ATLAS_SIZE * ATLAS_SIZE; i++)
+                {
+                    page.put(i * 4, (byte) 0xFF);
+                    page.put(i * 4 + 1, (byte) 0xFF);
+                    page.put(i * 4 + 2, (byte) 0xFF);
+                    page.put(i * 4 + 3, (byte) 0);
+                }
+                vulkanAtlasPages.put(atlasPageTex, page);
+                dirtyVulkanAtlasPages.add(atlasPageTex);
+                atlasPenX = atlasPenY = atlasShelfHeight = 0;
+                return;
+            }
             int filter = pixelPerfect ? GL_NEAREST : GL_LINEAR;
             int tex = glGenTextures();
             glBindTexture(GL_TEXTURE_2D, tex);
@@ -1279,7 +1345,9 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
         int codepoint = c;
         TtfFontInfo font = findFontForChar(c);
 
-        int[] slot = font.getOrCreateSlotForCodepoint(codepoint);   // {pageTex, atlasX, atlasY} or null
+        VulkanGameWindow vulkan = lwjglWindow instanceof VulkanGameWindow ? (VulkanGameWindow) lwjglWindow : null;
+        int[] slot = font.getOrCreateGlyphSlot(stbtt_FindGlyphIndex(font.stbInfo, codepoint), vulkan);   // {page, atlasX, atlasY} or null
+        font.uploadDirtyVulkanAtlasPages(vulkan);
         int[] m = font.getMetrics(codepoint);
         int advance = m[0];
         int bitmapW = m[1];
@@ -1298,6 +1366,17 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
 
         if (slot != null)
         {
+            if (vulkan != null)
+            {
+                double u0 = slot[1] / (double) TtfFontInfo.ATLAS_SIZE;
+                double v0 = slot[2] / (double) TtfFontInfo.ATLAS_SIZE;
+                double u1 = (slot[1] + bitmapW) / (double) TtfFontInfo.ATLAS_SIZE;
+                double v1 = (slot[2] + bitmapH) / (double) TtfFontInfo.ATLAS_SIZE;
+                ((VulkanShapeRenderer) lwjglWindow.shapeRenderer).drawing.drawImage(gx, gy, z, gw, gh,
+                        u0, v0, u1, v1, font.vulkanTextureKey(slot[0]), 0, depthtest);
+                return advance * font.fontScale * scaleX;
+            }
+
             if (depthtest)
                 glEnable(GL_DEPTH_TEST);
 
@@ -1343,9 +1422,10 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
     @Override
     public void drawString(double x, double y, double z, double sX, double sY, String s, boolean depth)
     {
-        if (depth)
+        boolean vulkan = lwjglWindow instanceof VulkanGameWindow;
+        if (!vulkan && depth)
             glEnable(GL_DEPTH_TEST);
-        else
+        else if (!vulkan)
             glDisable(GL_DEPTH_TEST);
 
         double opacity = this.window.colorA;
@@ -1377,7 +1457,8 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
             }
         }
 
-        glDisable(GL_DEPTH_TEST);
+        if (!vulkan)
+            glDisable(GL_DEPTH_TEST);
     }
 
     @Override
@@ -1658,10 +1739,37 @@ public class TruetypeFontRenderer extends BaseTrueTypeFontRenderer
             int glyphId = shaped.glyphIds[i];
             if (glyphId < 0 || glyphId >= 0xFFFE)
                 continue;
-            font.getOrCreateGlyphSlot(glyphId);
+            font.getOrCreateGlyphSlot(glyphId, lwjglWindow instanceof VulkanGameWindow ? (VulkanGameWindow) lwjglWindow : null);
         }
 
         // State is set once for the whole string rather than per glyph.
+        VulkanGameWindow vulkan = lwjglWindow instanceof VulkanGameWindow ? (VulkanGameWindow) lwjglWindow : null;
+        font.uploadDirtyVulkanAtlasPages(vulkan);
+        if (vulkan != null)
+        {
+            for (int i = 0; i < numGlyphs; i++)
+            {
+                int glyphId = shaped.glyphIds[i];
+                if (glyphId < 0 || glyphId >= 0xFFFE)
+                    continue;
+                int[] slot = font.getOrCreateGlyphSlot(glyphId, vulkan);
+                if (slot == null)
+                    continue;
+                int[] m = font.getGlyphMetrics(glyphId);
+                double gx = x + (shaped.posX[i] + m[3]) * scaleX;
+                double gy = baselineY + (shaped.posY[i] + m[4]) * scaleY;
+                double gw = m[1] * scaleX;
+                double gh = m[2] * scaleY;
+                double u0 = slot[1] / (double) TtfFontInfo.ATLAS_SIZE;
+                double v0 = slot[2] / (double) TtfFontInfo.ATLAS_SIZE;
+                double u1 = (slot[1] + m[1]) / (double) TtfFontInfo.ATLAS_SIZE;
+                double v1 = (slot[2] + m[2]) / (double) TtfFontInfo.ATLAS_SIZE;
+                ((VulkanShapeRenderer) lwjglWindow.shapeRenderer).drawing.drawImage(gx, gy, z, gw, gh,
+                        u0, v0, u1, v1, font.vulkanTextureKey(slot[0]), 0, depthtest);
+            }
+            return shaped.advance * scaleX;
+        }
+
         if (depthtest)
             glEnable(GL_DEPTH_TEST);
         lwjglWindow.enableTexture();

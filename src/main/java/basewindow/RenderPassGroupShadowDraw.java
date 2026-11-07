@@ -37,12 +37,18 @@ public class RenderPassGroupShadowDraw
         this.window = w;
         this.shadowPass = new RenderPassShadowMap(this);
         this.drawPass = new RenderPassDraw(this);
-        this.createFrameBuffer();
+        if (w.supportsAdvancedLighting())
+            this.createFrameBuffer();
     }
 
     public int getShadowMapSize()
     {
         return size;
+    }
+
+    public boolean isFirstScenePass()
+    {
+        return this.currentPassNumber == 0;
     }
 
     public void createFrameBuffer()
@@ -76,7 +82,7 @@ public class RenderPassGroupShadowDraw
     public void draw()
     {
         this.currentPassNumber = 0;
-        if (shadowsEnabled)
+        if (shadowsEnabled && this.depthFrameBuffer != null)
         {
             this.drawingShadow = true;
             this.shadowPass.draw();

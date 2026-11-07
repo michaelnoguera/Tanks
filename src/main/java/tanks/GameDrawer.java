@@ -19,16 +19,18 @@ public class GameDrawer implements IDrawer
             Game.drawer = this;
 
             this.initialized = true;
-            Game.game.window.mainRenderPasses.drawToFramebuffer = true;
-            this.lightsPass = new RenderPassPostLights();
+            if (Game.game.window.supportsAdvancedLighting())
+            {
+                this.lightsPass = new RenderPassPostLights();
 
-            ShaderPostLights lightsShader = new ShaderPostLights(this.lightsPass);
-            this.lightsPass.lightsShader = lightsShader;
-            lightsShader.initialize();
+                ShaderPostLights lightsShader = new ShaderPostLights(this.lightsPass);
+                this.lightsPass.lightsShader = lightsShader;
+                lightsShader.initialize();
 
-            ShaderPostLightingMix mixShader = new ShaderPostLightingMix(this.lightsPass);
-            this.lightsPass.mixShader = mixShader;
-            mixShader.initialize();
+                ShaderPostLightingMix mixShader = new ShaderPostLightingMix(this.lightsPass);
+                this.lightsPass.mixShader = mixShader;
+                mixShader.initialize();
+            }
 
             this.uiPass = new RenderPassUI();
             this.uiPass.shaderUI = new ShaderUIDefault(uiPass);
@@ -53,10 +55,10 @@ public class GameDrawer implements IDrawer
             if (!initialized)
                 this.initialize();
 
-            Game.game.window.mainRenderPasses.drawToFramebuffer = Game.fancyLights;
+            Game.game.window.mainRenderPasses.drawToFramebuffer = Game.fancyLightsActive();
             Game.game.window.mainRenderPasses.draw();
 
-            if (Game.fancyLights)
+            if (Game.fancyLightsActive())
                 this.lightsPass.draw();
 
             this.uiPass.draw();

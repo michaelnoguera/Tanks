@@ -230,6 +230,23 @@ tasks.register<JavaExec>("runVulkan") {
     }
 }
 
+tasks.register<JavaExec>("runVulkanGame") {
+    group = "application"
+    description = "Runs the normal Tanks game with the Vulkan renderer."
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("main.Tanks")
+    if (System.getProperty("os.name").startsWith("Mac"))
+        jvmArgs("-XstartOnFirstThread")
+    providers.gradleProperty("vulkanLibrary").orNull?.let {
+        systemProperty("org.lwjgl.vulkan.libname", it)
+    }
+    // Add this in doFirst so command-line --args (which replaces the configured
+    // JavaExec arguments) cannot accidentally select the OpenGL renderer.
+    doFirst {
+        args("--vulkan")
+    }
+}
+
 tasks.register<JavaExec>("vulkanDrawListTest") {
     group = "verification"
     description = "Checks Vulkan geometry command construction without a GPU."

@@ -325,7 +325,7 @@ public class Panel
         Game.game.window.constrainMouse = Game.constrainMouse && ((Game.screen instanceof ScreenGame && !((ScreenGame) Game.screen).paused && ((ScreenGame) Game.screen).playing &&
             Game.playerTank != null && !Game.playerTank.destroy) || Game.screen instanceof ScreenLevelEditor);
 
-        if (!Game.shadowsEnabled)
+        if (!Game.shadowsActive())
         {
             Game.game.window.mainRenderPasses.shadowQuality = 1;
             Game.game.window.mainRenderPasses.shadowsEnabled = false;
@@ -771,7 +771,7 @@ public class Panel
 
     public void draw()
     {
-        if ((Game.game.window.mainRenderPasses.drawingShadow || !Game.shadowsEnabled) && (Game.screen instanceof ScreenGame && !(((ScreenGame) Game.screen).paused &&
+        if (Game.game.window.mainRenderPasses.isFirstScenePass() && (Game.screen instanceof ScreenGame && !(((ScreenGame) Game.screen).paused &&
             !ScreenPartyHost.isServer && !ScreenPartyLobby.isClient)))
             this.age += Panel.frameFrequency;
 

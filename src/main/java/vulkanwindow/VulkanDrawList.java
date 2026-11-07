@@ -5,7 +5,7 @@ import basewindow.BaseShapeRenderer;
 import java.util.*;
 
 /**
- * Ordered triangle geometry for the Vulkan renderer. Vertices contain xyzw, rgba, uv.
+ * Ordered triangle geometry for the Vulkan renderer. Vertices contain xyzw, rgba, uv, and shadow xyzw.
  * Coordinates pass through a column-major transform into homogeneous clip space.
  * After the GPU divides by w, Vulkan NDC uses x/y in [-1, 1], y increasing
  * downward, and z in [0, 1] with smaller z nearer the camera.
@@ -14,32 +14,47 @@ import java.util.*;
  */
 public final class VulkanDrawList
 {
-    public static final int FLOATS_PER_VERTEX = 10;
+    public static final int FLOATS_PER_VERTEX = 14;
     private float[] data = new float[1024];
     private int size;
     private final List<Command> draws = new ArrayList<>();
     private float[] transform = identity();
+    private float[] shadowTransform;
     private float red = 1;
     private float green = 1;
     private float blue = 1;
     private float alpha = 1;
+    private float ambientLight = 1;
+    private float glow;
 
     public static final class Command
     {
         public final int first;
         public final int count;
+        public final boolean clearDepth;
+        public final boolean additive;
         /** Classpath resource path, or null for the renderer's white texture. */
         public final String texture;
         public final boolean depth;
         public final boolean depthWrite;
+        final VulkanFireworkDraw firework;
 
-        private Command(int first, int count, String texture, boolean depth, boolean depthWrite)
+        private Command(int first, int count, String texture, boolean depth, boolean depthWrite, boolean additive, boolean clearDepth)
+        {
+            this(first, count, texture, depth, depthWrite, additive, clearDepth, null);
+        }
+
+        private Command(int first, int count, String texture, boolean depth, boolean depthWrite,
+                        boolean additive, boolean clearDepth, VulkanFireworkDraw firework)
         {
             this.first = first;
             this.count = count;
             this.texture = texture;
             this.depth = depth;
             this.depthWrite = depthWrite;
+            this.additive = additive;
+            this.clearDepth = clearDepth;
+            this.firework = firework;
         }
     }
 
@@ -48,6 +63,9 @@ public final class VulkanDrawList
     {
         clear();
         transform = identity();
+        shadowTransform = null;
+        ambientLight = 1;
+        glow = 0;
         setColor(255, 255, 255, 255);
     }
 
@@ -64,6 +82,27 @@ public final class VulkanDrawList
         green = channel(g);
         blue = channel(b);
         alpha = channel(a);
+    }
+
+    public void setAmbientLight(double intensity)
+    {
+        ambientLight = (float) intensity;
+    }
+
+    public void setGlow(double amount)
+    {
+        glow = (float) amount;
+    }
+
+    /** Copies the current normalized RGBA color into a caller-owned four-float array. */
+    public void getColor(float[] out)
+    {
+        if (out == null || out.length < 4)
+            throw new IllegalArgumentException("Color output must contain at least 4 floats");
+        out[0] = red;
+        out[1] = green;
+        out[2] = blue;
+        out[3] = alpha;
     }
 
     private static float channel(double value)
@@ -86,6 +125,64 @@ public final class VulkanDrawList
             if (!Float.isFinite(value))
                 throw new IllegalArgumentException("Transform must be finite");
         transform = matrix.clone();
+    }
+
+    /** Sets the column-major world-to-light-clip transform; null disables shadow coordinates. */
+    public void setShadowTransform(float[] matrix)
+    {
+        if (matrix == null)
+        {
+            shadowTransform = null;
+            return;
+        }
+        if (matrix.length != 16)
+            throw new IllegalArgumentException("Shadow transform must contain 16 floats");
+        for (float value: matrix)
+            if (!Float.isFinite(value))
+                throw new IllegalArgumentException("Shadow transform must be finite");
+        shadowTransform = matrix.clone();
+    }
+
+    /** Returns whether depth-writing geometry has usable light-space vertex coordinates. */
+    public boolean hasShadowGeometry()
+    {
+        for (Command command: draws)
+        {
+            if (!command.depth || !command.depthWrite || command.clearDepth)
+                continue;
+            int end = (command.first + command.count) * FLOATS_PER_VERTEX;
+            for (int offset = command.first * FLOATS_PER_VERTEX + 13; offset < end; offset += FLOATS_PER_VERTEX)
+                if (data[offset] != 0)
+                    return true;
+        }
+        return false;
+    }
+
+    public int vertexCount()
+    {
+        return size / FLOATS_PER_VERTEX;
+    }
+
+    void copyVertices(java.nio.FloatBuffer output)
+    {
+        output.put(data, 0, size);
+    }
+
+    public void clearDepth()
+    {
+        draws.add(new Command(vertexCount(), 0, null, false, false, false, true));
+    }
+
+    void firework(VulkanFireworkDraw.Mesh mesh, float[] gravity, float[] tint, float time, float glow, boolean additive)
+    {
+        if (mesh.count() > 0)
+            draws.add(new Command(0, mesh.count(), null, false, false, additive, false,
+                    new VulkanFireworkDraw(mesh, transform, gravity, tint, time, glow)));
+    }
+
+    boolean hasUnitLight()
+    {
+        return ambientLight * (1 - glow) + glow == 1;
     }
 
     public float[] vertices()
@@ -150,9 +247,9 @@ public final class VulkanDrawList
         int first = size / FLOATS_PER_VERTEX;
         double cos = Math.cos(rotation);
         double sin = Math.sin(rotation);
-        int[] corners = {0, 1, 2, 0, 2, 3};
-        for (int corner: corners)
+        for (int i = 0; i < 6; i++)
         {
+            int corner = i < 3 ? i : (i == 3 ? 0 : i - 2);
             boolean right = corner == 1 || corner == 2;
             boolean bottom = corner >= 2;
             double dx = (right ? 0.5 : -0.5) * width;
@@ -175,7 +272,24 @@ public final class VulkanDrawList
         vertex(x4, y4, z4, 0, 1);
     }
 
-    private void vertex(double x, double y, double z, double u, double v)
+    public void vertex(double x, double y, double z, double u, double v)
+    {
+        vertex(x, y, z, u, v, red, green, blue, alpha);
+    }
+
+    /** Adds a vertex with an explicit normalized RGBA color, without changing the current color. */
+    public void vertex(double x, double y, double z, double u, double v, float[] rgba)
+    {
+        if (rgba == null || rgba.length < 4)
+            throw new IllegalArgumentException("Vertex color must contain at least 4 floats");
+        for (int i = 0; i < 4; i++)
+            if (!Float.isFinite(rgba[i]) || rgba[i] < 0 || rgba[i] > 1)
+                throw new IllegalArgumentException("Vertex color channels must be finite and in [0, 1]");
+        vertex(x, y, z, u, v, rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+
+    private void vertex(double x, double y, double z, double u, double v,
+                        float vertexRed, float vertexGreen, float vertexBlue, float vertexAlpha)
     {
         float clipX = finiteFloat(transform[0] * x + transform[4] * y + transform[8] * z + transform[12]);
         float clipY = finiteFloat(transform[1] * x + transform[5] * y + transform[9] * z + transform[13]);
@@ -189,12 +303,26 @@ public final class VulkanDrawList
         data[size++] = clipY;
         data[size++] = clipZ;
         data[size++] = clipW;
-        data[size++] = red;
-        data[size++] = green;
-        data[size++] = blue;
-        data[size++] = alpha;
+        data[size++] = vertexRed;
+        data[size++] = vertexGreen;
+        data[size++] = vertexBlue;
+        data[size++] = vertexAlpha;
         data[size++] = textureU;
         data[size++] = textureV;
+        if (shadowTransform == null)
+        {
+            data[size++] = 0;
+            data[size++] = 0;
+            data[size++] = 0;
+            data[size++] = 0;
+        }
+        else
+        {
+            data[size++] = finiteFloat(shadowTransform[0] * x + shadowTransform[4] * y + shadowTransform[8] * z + shadowTransform[12]);
+            data[size++] = finiteFloat(shadowTransform[1] * x + shadowTransform[5] * y + shadowTransform[9] * z + shadowTransform[13]);
+            data[size++] = finiteFloat(shadowTransform[2] * x + shadowTransform[6] * y + shadowTransform[10] * z + shadowTransform[14]);
+            data[size++] = finiteFloat(shadowTransform[3] * x + shadowTransform[7] * y + shadowTransform[11] * z + shadowTransform[15]);
+        }
     }
 
     private static float finiteFloat(double value)
@@ -210,10 +338,47 @@ public final class VulkanDrawList
         finish(first, texture, depth, depth && alpha == 1);
     }
 
-    private void finish(int first, String texture, boolean depth, boolean depthWrite)
+    public void finish(int first, String texture, boolean depth, boolean depthWrite)
     {
-        int count = size / FLOATS_PER_VERTEX - first;
-        if (count > 0)
-            draws.add(new Command(first, count, texture, depth, depthWrite));
+        finish(first, texture, depth, depthWrite, false);
+    }
+
+    public void finish(int first, String texture, boolean depth, boolean depthWrite, boolean additive)
+    {
+        int count = vertexCount() - first;
+        if (count <= 0)
+            return;
+
+        if (!depth)
+        {
+            int end = (first + count) * FLOATS_PER_VERTEX;
+            for (int offset = first * FLOATS_PER_VERTEX + 13; offset < end; offset += FLOATS_PER_VERTEX)
+                data[offset] = 0;
+        }
+
+        float light = ambientLight * (1 - glow) + glow;
+        if (!additive && light != 1)
+        {
+            for (int i = first * FLOATS_PER_VERTEX; i < size; i += FLOATS_PER_VERTEX)
+            {
+                data[i + 4] *= light;
+                data[i + 5] *= light;
+                data[i + 6] *= light;
+            }
+        }
+
+        int lastIndex = draws.size() - 1;
+        if (lastIndex >= 0)
+        {
+            Command last = draws.get(lastIndex);
+            if (!last.clearDepth && last.firework == null && last.first + last.count == first && last.depth == depth &&
+                last.depthWrite == depthWrite && last.additive == additive && Objects.equals(last.texture, texture))
+            {
+                draws.set(lastIndex, new Command(last.first, last.count + count, texture, depth, depthWrite, additive, false));
+                return;
+            }
+        }
+
+        draws.add(new Command(first, count, texture, depth, depthWrite, additive, false));
     }
 }

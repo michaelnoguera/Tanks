@@ -52,7 +52,7 @@ public class ScreenOptionsGraphics extends Screen
         else
             graphics3d.setText(graphics3dText, ScreenOptions.offText);
 
-        if (Game.fancyLights)
+        if (Game.fancyLightsActive())
             fancyLighting.setText(fancyLightingText, ScreenOptions.onText);
         else
             fancyLighting.setText(fancyLightingText, ScreenOptions.offText);
@@ -101,10 +101,16 @@ public class ScreenOptionsGraphics extends Screen
 //        if (Game.framework == Game.Framework.libgdx)
 //            Game.shadowsEnabled = false;
 
-        if (!Game.shadowsEnabled)
+        if (!Game.shadowsActive())
             shadows.setText("Shadows: ", ScreenOptions.offText);
         else
             shadows.setText("Shadow quality: ", "\u00A7000200000255" + Game.shadowQuality);
+
+        if (!Game.game.window.supportsAdvancedLighting())
+            fancyLighting.enabled = false;
+
+        if (!Game.game.window.supportsShadows())
+            shadows.enabled = false;
 
         if (!Game.effectsEnabled)
             effects.setText("Particle effects: ", ScreenOptions.offText);
@@ -242,7 +248,7 @@ public class ScreenOptionsGraphics extends Screen
         {
             Game.fancyLights = !Game.fancyLights;
 
-            if (Game.fancyLights)
+            if (Game.fancyLightsActive())
                 fancyLighting.setText(fancyLightingText, ScreenOptions.onText);
             else
                 fancyLighting.setText(fancyLightingText, ScreenOptions.offText);

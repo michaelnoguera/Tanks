@@ -14,6 +14,7 @@ import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.glfw.GLFWVulkan.*;
@@ -48,9 +49,14 @@ public final class VulkanRenderer implements AutoCloseable
     private long swapchain;
     private long renderPass;
     private long pipelineLayout;
-    private final long[] pipelines = new long[3];
+    private final long[] pipelines = new long[8];
+    private VulkanShadowMaps shadowMaps;
     private VulkanResources resources;
     private final VulkanResources.Buffer[] vertexBuffers = new VulkanResources.Buffer[FRAMES_IN_FLIGHT];
+    private final IdentityHashMap<VulkanFireworkDraw.Mesh, FireworkBuffer> fireworkBuffers = new IdentityHashMap<>();
+    private final long[] frameSubmissionSerial = new long[FRAMES_IN_FLIGHT];
+    private long submissionSerial;
+    private long completedSerial;
     private VulkanResources.Image[] depthImages = new VulkanResources.Image[0];
     private long[] swapchainImages = new long[0];
     private int colorFormat;
@@ -64,6 +70,14 @@ public final class VulkanRenderer implements AutoCloseable
     private int width;
     private int height;
     private int generations;
+    private float shadowBrightness = 0.55f;
+    private int shadowMapSize = 2048;
+
+    private static final class FireworkBuffer
+    {
+        VulkanResources.Buffer buffer;
+        long lastUseSerial;
+    }
 
     public VulkanRenderer(VulkanWindow window, boolean validation)
     {
@@ -233,8 +247,58 @@ public final class VulkanRenderer implements AutoCloseable
         throw new IllegalStateException("No depth attachment format");
     }
 
+    private int selectShadowDepthFormat(MemoryStack stack)
+    {
+        VkFormatProperties properties = VkFormatProperties.calloc(stack);
+        for (int format: new int[] {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM})
+        {
+            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, properties);
+            int features = properties.optimalTilingFeatures();
+            int required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            if ((features & required) == required) return format;
+        }
+        throw new IllegalStateException("No sampleable depth attachment format for shadow maps");
+    }
+
     /** Retained CPU commands are uploaded after each frame slot's fence signals. */
     public void setDrawing(VulkanDrawList drawing) { this.drawing = Objects.requireNonNull(drawing); }
+
+    /** Register a top-to-bottom RGBA8 texture for use by subsequent draw-list commands. */
+    public void registerTexture(String key, int width, int height, ByteBuffer rgba)
+    {
+        resources.registerTexture(key, width, height, rgba);
+    }
+
+    /** Set the classpath/resource lookup used when a draw-list texture has not been registered. */
+    public void setTextureSource(Function<String, InputStream> source)
+    {
+        resources.setTextureSource(source);
+    }
+
+    void setShadowBrightness(float ratio)
+    {
+        if (!Float.isFinite(ratio) || ratio < 0 || ratio > 1)
+            throw new IllegalArgumentException("Shadow brightness must be finite and in [0, 1]");
+        shadowBrightness = ratio;
+    }
+
+    void setShadowMapSize(int requestedSize)
+    {
+        if (requestedSize <= 0)
+            throw new IllegalArgumentException("Shadow map size must be positive; use 1 to disable shadows");
+        int selectedSize = requestedSize == 1 ? 1 : Math.min(requestedSize, 4096);
+        try (MemoryStack stack = MemoryStack.stackPush())
+        {
+            VkPhysicalDeviceProperties properties = VkPhysicalDeviceProperties.calloc(stack);
+            vkGetPhysicalDeviceProperties(physicalDevice, properties);
+            selectedSize = Math.min(selectedSize, properties.limits().maxImageDimension2D());
+        }
+        if (shadowMapSize != selectedSize)
+        {
+            shadowMapSize = selectedSize;
+            presentationModeChanged = true;
+        }
+    }
 
     /** Saves the next rendered image; requires transfer-source support on the surface. */
     public void capture(java.nio.file.Path path) { capturePath = Objects.requireNonNull(path); }
@@ -314,6 +378,7 @@ public final class VulkanRenderer implements AutoCloseable
             views = new long[count.get(0)];
             framebuffers = new long[views.length];
             presented = new long[views.length];
+            shadowMaps = new VulkanShadowMaps(resources, selectShadowDepthFormat(stack), views.length, shadowMapSize);
             createRenderPass(stack, format);
             createPipeline(stack);
             for (int i = 0; i < views.length; i++)
@@ -355,7 +420,9 @@ public final class VulkanRenderer implements AutoCloseable
         dependencies.get(0).srcSubpass(VK_SUBPASS_EXTERNAL).dstSubpass(0)
                 .srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT)
                 .dstStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT)
-                .dstAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+                .srcAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+                .dstAccessMask(VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         LongBuffer handle = stack.mallocLong(1);
         check(vkCreateRenderPass(device, VkRenderPassCreateInfo.calloc(stack).sType$Default().pAttachments(attachments)
                 .pSubpasses(subpass).pDependencies(dependencies), null, handle), "create render pass");
@@ -388,12 +455,18 @@ public final class VulkanRenderer implements AutoCloseable
     {
         long vertex = shader(stack, "/vulkan/geometry.vert.spv");
         long fragment = 0;
+        long fireworkVertex = 0;
         try
         {
             fragment = shader(stack, "/vulkan/geometry.frag.spv");
+            fireworkVertex = shader(stack, "/vulkan/firework.vert.spv");
             VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
             stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vertex).pName(stack.UTF8("main"));
             stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fragment).pName(stack.UTF8("main"));
+            VkSpecializationMapEntry.Buffer glowEntry = VkSpecializationMapEntry.calloc(1, stack);
+            glowEntry.get(0).constantID(0).offset(0).size(Integer.BYTES);
+            VkSpecializationInfo glowSpecialization = VkSpecializationInfo.calloc(stack).pMapEntries(glowEntry);
+            stages.get(1).pSpecializationInfo(glowSpecialization);
             VkViewport.Buffer viewport = VkViewport.calloc(1, stack);
             viewport.get(0).width(width).height(height).minDepth(0).maxDepth(1);
             VkRect2D.Buffer scissor = VkRect2D.calloc(1, stack);
@@ -404,15 +477,21 @@ public final class VulkanRenderer implements AutoCloseable
                     .srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
                     .alphaBlendOp(VK_BLEND_OP_ADD).colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
             LongBuffer handle = stack.mallocLong(1);
+            VkPushConstantRange.Buffer pushConstants = VkPushConstantRange.calloc(2, stack);
+            pushConstants.get(0).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(Float.BYTES);
+            pushConstants.get(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT)
+                    .offset(VulkanFireworkDraw.PUSH_OFFSET).size(VulkanFireworkDraw.PUSH_SIZE);
             check(vkCreatePipelineLayout(device, VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(resources.descriptorLayout)), null, handle), "create pipeline layout");
+                    .pSetLayouts(stack.longs(resources.descriptorLayout, shadowMaps.descriptorLayout()))
+                    .pPushConstantRanges(pushConstants), null, handle), "create pipeline layout");
             pipelineLayout = handle.get(0);
             VkVertexInputBindingDescription.Buffer binding = VkVertexInputBindingDescription.calloc(1, stack);
             binding.get(0).binding(0).stride(VulkanDrawList.FLOATS_PER_VERTEX * Float.BYTES).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
-            VkVertexInputAttributeDescription.Buffer attributes = VkVertexInputAttributeDescription.calloc(3, stack);
+            VkVertexInputAttributeDescription.Buffer attributes = VkVertexInputAttributeDescription.calloc(4, stack);
             attributes.get(0).binding(0).location(0).format(VK_FORMAT_R32G32B32A32_SFLOAT).offset(0);
             attributes.get(1).binding(0).location(1).format(VK_FORMAT_R32G32B32A32_SFLOAT).offset(4 * Float.BYTES);
             attributes.get(2).binding(0).location(2).format(VK_FORMAT_R32G32_SFLOAT).offset(8 * Float.BYTES);
+            attributes.get(3).binding(0).location(3).format(VK_FORMAT_R32G32B32A32_SFLOAT).offset(10 * Float.BYTES);
             VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
                     .depthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL);
             VkGraphicsPipelineCreateInfo.Buffer info = VkGraphicsPipelineCreateInfo.calloc(1, stack);
@@ -427,9 +506,20 @@ public final class VulkanRenderer implements AutoCloseable
                     .pMultisampleState(VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default().rasterizationSamples(VK_SAMPLE_COUNT_1_BIT))
                     .pColorBlendState(VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blending))
                     .layout(pipelineLayout).renderPass(renderPass).subpass(0);
+            ByteBuffer specializationData = stack.malloc(Integer.BYTES);
+            glowSpecialization.pData(specializationData);
             for (int variant = 0; variant < pipelines.length; variant++)
             {
-                depth.depthTestEnable(variant != 0).depthWriteEnable(variant == 1);
+                boolean firework = variant >= 6;
+                stages.get(0).module(firework ? fireworkVertex : vertex);
+                depth.depthTestEnable(!firework && variant % 3 != 0)
+                        .depthWriteEnable(!firework && variant % 3 == 1);
+                boolean glow = firework ? variant == 7 : variant >= 3;
+                blending.get(0).srcColorBlendFactor(glow ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA)
+                        .dstColorBlendFactor(glow ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+                        .srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE)
+                        .dstAlphaBlendFactor(glow ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+                specializationData.putInt(0, glow ? 1 : 0);
                 handle.put(0, 0);
                 int result = vkCreateGraphicsPipelines(device, 0, info, null, handle);
                 pipelines[variant] = handle.get(0);
@@ -438,6 +528,7 @@ public final class VulkanRenderer implements AutoCloseable
         }
         finally
         {
+            if (fireworkVertex != 0) vkDestroyShaderModule(device, fireworkVertex, null);
             if (fragment != 0) vkDestroyShaderModule(device, fragment, null);
             vkDestroyShaderModule(device, vertex, null);
         }
@@ -462,7 +553,9 @@ public final class VulkanRenderer implements AutoCloseable
             long frameFence = frameFences[currentFrame];
             long acquireSemaphore = acquired[currentFrame];
             check(vkWaitForFences(device, frameFence, true, -1L), "wait frame fence");
-            uploadDrawing(stack);
+            completedSerial = Math.max(completedSerial, frameSubmissionSerial[currentFrame]);
+            evictFireworkBuffers();
+            long[] textureDescriptors = uploadDrawing(stack);
             if (capturePath != null)
             {
                 VkSurfaceCapabilitiesKHR caps = VkSurfaceCapabilitiesKHR.calloc(stack);
@@ -485,13 +578,19 @@ public final class VulkanRenderer implements AutoCloseable
             if (result != VK_SUBOPTIMAL_KHR) check(result, "acquire swapchain image");
             boolean recreate = result == VK_SUBOPTIMAL_KHR;
             check(vkResetCommandBuffer(command, 0), "reset command buffer");
-            record(stack, command, image.get(0));
+            record(stack, command, image.get(0), textureDescriptors);
             // Reset only after acquire succeeds, so OUT_OF_DATE never leaves an unsignaled frame fence.
             check(vkResetFences(device, frameFence), "reset frame fence");
             VkSubmitInfo submit = VkSubmitInfo.calloc(stack).sType$Default().waitSemaphoreCount(1).pWaitSemaphores(stack.longs(acquireSemaphore))
-                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)).pCommandBuffers(stack.pointers(command.address()))
+                    .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT))
+                    .pCommandBuffers(stack.pointers(command.address()))
                     .pSignalSemaphores(stack.longs(presented[image.get(0)]));
             check(vkQueueSubmit(graphicsQueue, submit, frameFence), "submit frame");
+            long submitted = ++submissionSerial;
+            frameSubmissionSerial[currentFrame] = submitted;
+            for (VulkanDrawList.Command draw: drawing.commands())
+                if (draw.firework != null) fireworkBuffers.get(draw.firework.mesh()).lastUseSerial = submitted;
             VkPresentInfoKHR present = VkPresentInfoKHR.calloc(stack).sType$Default().pWaitSemaphores(stack.longs(presented[image.get(0)]))
                     .swapchainCount(1).pSwapchains(stack.longs(swapchain)).pImageIndices(image);
             result = vkQueuePresentKHR(presentQueue, present);
@@ -508,23 +607,66 @@ public final class VulkanRenderer implements AutoCloseable
         }
     }
 
-    private void uploadDrawing(MemoryStack stack)
+    private long[] uploadDrawing(MemoryStack stack)
     {
         if (drawing == null) throw new IllegalStateException("Set a draw list before rendering");
-        float[] vertices = drawing.vertices();
-        long bytes = (long) vertices.length * Float.BYTES;
+        long bytes = (long) drawing.vertexCount() * VulkanDrawList.FLOATS_PER_VERTEX * Float.BYTES;
         VulkanResources.Buffer buffer = vertexBuffers[currentFrame];
         if (buffer == null || buffer.size < bytes)
         {
             if (buffer != null) buffer.close();
-            buffer = resources.buffer(Math.max(bytes, 4096), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            buffer = resources.buffer(Math.max(bytes, buffer == null ? 4096 : buffer.size * 2), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
             vertexBuffers[currentFrame] = buffer;
         }
         ByteBuffer mapped = buffer.map(stack);
-        try { mapped.asFloatBuffer().put(vertices); }
+        try { drawing.copyVertices(mapped.asFloatBuffer()); }
         finally { buffer.unmap(); }
         // Load new textures before recording. Uploads complete before staging buffers are freed.
-        for (VulkanDrawList.Command draw: drawing.commands()) resources.texture(draw.texture);
+        List<VulkanDrawList.Command> draws = drawing.commands();
+        long[] descriptors = new long[draws.size()];
+        for (int i = 0; i < draws.size(); i++)
+        {
+            VulkanDrawList.Command draw = draws.get(i);
+            if (!draw.clearDepth) descriptors[i] = resources.texture(draw.texture);
+            if (draw.firework != null) ensureFireworkBuffer(stack, draw.firework.mesh());
+        }
+        return descriptors;
+    }
+
+    private void ensureFireworkBuffer(MemoryStack stack, VulkanFireworkDraw.Mesh mesh)
+    {
+        if (fireworkBuffers.containsKey(mesh)) return;
+        float[] vertices = mesh.vertices();
+        long bytes = (long) vertices.length * Float.BYTES;
+        VulkanResources.Buffer buffer = resources.buffer(bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        try
+        {
+            ByteBuffer mapped = buffer.map(stack);
+            try { mapped.asFloatBuffer().put(vertices); }
+            finally { buffer.unmap(); }
+        }
+        catch (RuntimeException | Error failure)
+        {
+            buffer.close();
+            throw failure;
+        }
+        FireworkBuffer cached = new FireworkBuffer();
+        cached.buffer = buffer;
+        fireworkBuffers.put(mesh, cached);
+    }
+
+    private void evictFireworkBuffers()
+    {
+        Iterator<Map.Entry<VulkanFireworkDraw.Mesh, FireworkBuffer>> entries = fireworkBuffers.entrySet().iterator();
+        while (entries.hasNext())
+        {
+            FireworkBuffer cached = entries.next().getValue();
+            if (completedSerial - cached.lastUseSerial >= FRAMES_IN_FLIGHT)
+            {
+                cached.buffer.close();
+                entries.remove();
+            }
+        }
     }
 
     private void saveCapture(MemoryStack stack)
@@ -561,9 +703,11 @@ public final class VulkanRenderer implements AutoCloseable
         }
     }
 
-    private void record(MemoryStack stack, VkCommandBuffer command, int image)
+    private void record(MemoryStack stack, VkCommandBuffer command, int image, long[] textureDescriptors)
     {
         check(vkBeginCommandBuffer(command, VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin frame commands");
+        List<VulkanDrawList.Command> draws = drawing.commands();
+        shadowMaps.record(stack, command, image, vertexBuffers[currentFrame], draws, textureDescriptors);
         VkClearValue.Buffer clear = VkClearValue.calloc(2, stack);
         clear.get(0).color().float32(0, 0.025f).float32(1, 0.035f).float32(2, 0.055f).float32(3, 1);
         clear.get(1).depthStencil().depth(1);
@@ -572,14 +716,61 @@ public final class VulkanRenderer implements AutoCloseable
         begin.renderArea().extent().set(width, height);
         vkCmdBeginRenderPass(command, begin, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindVertexBuffers(command, 0, stack.longs(vertexBuffers[currentFrame].handle), stack.longs(0));
-        for (VulkanDrawList.Command draw: drawing.commands())
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1,
+                stack.longs(shadowMaps.descriptor(image)), null);
+        float effectiveShadowBrightness = shadowMapSize == 1 ? 1.0f : shadowBrightness;
+        ByteBuffer shadowSettings = stack.malloc(Float.BYTES).putFloat(effectiveShadowBrightness);
+        shadowSettings.flip();
+        vkCmdPushConstants(command, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, shadowSettings);
+        int currentPipeline = -1;
+        long currentTexture = 0;
+        VulkanFireworkDraw.Mesh boundFireworkMesh = null;
+        LongBuffer boundVertexBuffer = stack.mallocLong(1);
+        LongBuffer vertexBufferOffset = stack.longs(0);
+        ByteBuffer fireworkConstants = stack.malloc(VulkanFireworkDraw.PUSH_SIZE);
+        LongBuffer descriptor = stack.mallocLong(1);
+        VkClearAttachment.Buffer clearDepth = VkClearAttachment.calloc(1, stack);
+        clearDepth.get(0).aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT).clearValue(clear.get(1));
+        VkClearRect.Buffer clearRect = VkClearRect.calloc(1, stack);
+        clearRect.get(0).rect().extent().set(width, height);
+        clearRect.get(0).layerCount(1);
+        for (int drawIndex = 0; drawIndex < draws.size(); drawIndex++)
         {
-            int variant = !draw.depth ? 0 : draw.depthWrite ? 1 : 2;
-            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[variant]);
-            try (MemoryStack drawStack = MemoryStack.stackPush())
+            VulkanDrawList.Command draw = draws.get(drawIndex);
+            if (draw.clearDepth)
+            {
+                vkCmdClearAttachments(command, clearDepth, clearRect);
+                continue;
+            }
+
+            boolean firework = draw.firework != null;
+            VulkanFireworkDraw.Mesh mesh = firework ? draw.firework.mesh() : null;
+            if (boundFireworkMesh != mesh)
+            {
+                long buffer = firework ? fireworkBuffers.get(mesh).buffer.handle : vertexBuffers[currentFrame].handle;
+                vkCmdBindVertexBuffers(command, 0, boundVertexBuffer.put(0, buffer), vertexBufferOffset);
+                boundFireworkMesh = mesh;
+            }
+            if (firework)
+            {
+                fireworkConstants.clear();
+                draw.firework.pushConstants(fireworkConstants);
+                fireworkConstants.flip();
+                vkCmdPushConstants(command, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                        VulkanFireworkDraw.PUSH_OFFSET, fireworkConstants);
+            }
+            int variant = firework ? 6 + (draw.additive ? 1 : 0) : (draw.additive ? 3 : 0) + (!draw.depth ? 0 : draw.depthWrite ? 1 : 2);
+            if (currentPipeline != variant)
+            {
+                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[variant]);
+                currentPipeline = variant;
+            }
+            long texture = textureDescriptors[drawIndex];
+            if (currentTexture != texture)
             {
                 vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0,
-                        drawStack.longs(resources.texture(draw.texture)), null);
+                        descriptor.put(0, texture), null);
+                currentTexture = texture;
             }
             vkCmdDraw(command, draw.count, 1, draw.first, 0);
         }
@@ -634,6 +825,8 @@ public final class VulkanRenderer implements AutoCloseable
         depthImages = new VulkanResources.Image[0];
         if (pipelineLayout != 0) vkDestroyPipelineLayout(device, pipelineLayout, null);
         pipelineLayout = 0;
+        if (shadowMaps != null) shadowMaps.close();
+        shadowMaps = null;
         if (renderPass != 0) vkDestroyRenderPass(device, renderPass, null);
         renderPass = 0;
         for (long view: views) if (view != 0) vkDestroyImageView(device, view, null);
@@ -655,6 +848,8 @@ public final class VulkanRenderer implements AutoCloseable
             if (readback != null) readback.close();
             readback = null;
             for (VulkanResources.Buffer buffer: vertexBuffers) if (buffer != null) buffer.close();
+            for (FireworkBuffer buffer: fireworkBuffers.values()) buffer.buffer.close();
+            fireworkBuffers.clear();
             if (resources != null) resources.close();
             resources = null;
             for (long fence: frameFences) if (fence != 0) vkDestroyFence(device, fence, null);
